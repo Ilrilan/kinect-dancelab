@@ -1,6 +1,6 @@
 # Модель данных
 
-> Status: draft
+> Status: scenarios
 > Parent: [index.md](index.md)
 > Источник переносимого содержимого: spec/20-data-model.md и диалог 2026-11-08 (хранение, резервные копии)
 
