@@ -1,0 +1,51 @@
+# --- .NET / WPF ---
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+.vs/
+artifacts/
+*.nupkg
+
+# --- Python (импортёр AIST++) ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- Датасеты и производные данные: в репозиторий не попадают (00-overview, не-цели) ---
+data/
+datasets/
+aist/
+bundles/
+sessions/
+cache/
+*.sqlite
+*.sqlite3
+*.db
+*.npz
+*.pkl
+*.mp4
+*.mkv
+*.wav
+
+# --- Исходный архив спеки: содержимое уже распаковано в spec/ ---
+/dancelab-spec.zip
+
+# --- Окружение и редакторы ---
+.env
+.env.local
+.idea/
+*.log
+Thumbs.db
+desktop.ini
+
+# --- Claude Code: локальные настройки не шарим, общие (settings.json) шарим ---
+.claude/settings.local.json
