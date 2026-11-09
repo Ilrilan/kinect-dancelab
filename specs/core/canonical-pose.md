@@ -1,6 +1,6 @@
 # Каноническая поза
 
-> Status: draft
+> Status: scenarios
 > Parent: [index.md](index.md)
 > Источник переносимого содержимого: spec/10-canonical-pose.md
 > Данные для сверки: docs/aist-format-findings.md, docs/aist-missing-motions.md
