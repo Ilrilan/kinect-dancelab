@@ -271,7 +271,7 @@ namespace DanceLab.Capture.Nuitrack
             }
 
             var host = DateTime.UtcNow.Ticks;
-            var data = new byte[frame.DataSize];
+            var data = new byte[frame.Cols * frame.Rows * 2];
             Marshal.Copy(frame.Data, data, 0, data.Length);
             handler(new ImageFrame((long)frame.Timestamp, host, frame.Cols, frame.Rows, "Depth16", data));
         }
@@ -285,7 +285,7 @@ namespace DanceLab.Capture.Nuitrack
             }
 
             var host = DateTime.UtcNow.Ticks;
-            var data = new byte[frame.DataSize];
+            var data = new byte[frame.Cols * frame.Rows * 3];
             Marshal.Copy(frame.Data, data, 0, data.Length);
             handler(new ImageFrame((long)frame.Timestamp, host, frame.Cols, frame.Rows, "Rgb24", data));
         }

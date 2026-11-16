@@ -45,7 +45,13 @@ spec/              спека, источник истины
   90-decisions     журнал решений и открытые вопросы
 ```
 
-Кода пока нет. Когда появится, раскладка следует Д4 (Studio и Player — разные
+Код слоя захвата уже есть (спек specs/capture/index.md): решение DanceLab.sln,
+src/DanceLab.Capture (общая библиотека), src/DanceLab.Capture.Kinect и
+src/DanceLab.Capture.Nuitrack (реализации под трекеры), tools/sensor_probe
+(консоль и сценарий записей), tools/capture_report (сводка по записям, Node TS),
+tests/DanceLab.Capture.Tests. Сборка: dotnet build DanceLab.sln, тесты: dotnet test
+tests/DanceLab.Capture.Tests и node --test tools/capture_report/report.test.ts.
+Остального кода пока нет. Когда появится, раскладка следует Д4 (Studio и Player — разные
 приложения) и Д5 (одно WPF-приложение на C#, без вебвью):
 
 ```

@@ -74,6 +74,12 @@ namespace DanceLab.Capture.Tests
             }
         }
 
+        public void PushImagesOfSize(int i, int dw, int dh, int cw, int ch)
+        {
+            DepthReceived?.Invoke(MakeImage(i, dw, dh, "Depth16"));
+            ColorReceived?.Invoke(MakeImage(i, cw, ch, "Yuy2"));
+        }
+
         public void PushImages(int count, int w, int h)
         {
             for (var i = 0; i < count; i++)

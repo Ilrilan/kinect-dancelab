@@ -108,5 +108,40 @@ namespace DanceLab.Capture.Tests
             Assert.Equal(CaptureExitCode.NoSensor, r.Code);
             Assert.False(Directory.Exists(dir));
         }
+
+        [Fact]
+        public void RealisticSizesSmokeIfEnabled()
+        {
+            if (Environment.GetEnvironmentVariable("DANCELAB_HEAVY") != "1")
+            {
+                return;
+            }
+
+            var sensor = new SensorInfo("s1", "SN", new FrameSize(512, 424, 30, "Depth16"), new FrameSize(1920, 1080, 30, "Yuy2"));
+            var src = new FakePoseSource(sensor);
+            using var cts = new CancellationTokenSource();
+            var t = new Thread(() =>
+            {
+                var i = 0;
+                while (!cts.IsCancellationRequested)
+                {
+                    src.PushSkeleton(1);
+                    src.PushImagesOfSize(i++, 512, 424, 1920, 1080);
+                    Thread.Sleep(33);
+                }
+            })
+            { IsBackground = true };
+            t.Start();
+            var o = Options(dir, true);
+            o.DurationSeconds = 10;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var r = CaptureSession.Run(src, src, o);
+            cts.Cancel();
+            t.Join();
+            Assert.Equal(CaptureExitCode.Ok, r.Code);
+            Assert.InRange(r.DepthFrames, 100, 320);
+            Assert.Equal(r.ColorFrames * 1920L * 1080 * 2, new FileInfo(Path.Combine(dir, "color.bin")).Length);
+            Assert.True(sw.Elapsed.TotalSeconds < 60, "сохранение слишком долгое: " + sw.Elapsed);
+        }
     }
 }
