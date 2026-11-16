@@ -212,7 +212,10 @@ export interface FoundPlane {
   rmsMm: number;
 }
 
-export function findPlanes(pts: Float32Array, thresholdM = 0.02, maxPlanes = 10, minShare = 0.02, seed = 7): FoundPlane[] {
+/** Допуск до плоскости растёт с расстоянием: ошибка глубины Kinect растёт примерно квадратично, берём линейный запас. */
+export const distanceTolerance = (baseM: number, zM: number, perMeter = 0.004): number => baseM + perMeter * zM;
+
+export function findPlanes(pts: Float32Array, thresholdM = 0.02, maxPlanes = 10, minShare = 0.02, seed = 7, perMeter = 0.004): FoundPlane[] {
   const total = pts.length / 3;
   const rand = rng(seed);
   let alive: number[] = Array.from({ length: total }, (_, i) => i);
@@ -220,7 +223,7 @@ export function findPlanes(pts: Float32Array, thresholdM = 0.02, maxPlanes = 10,
   for (let k = 0; k < maxPlanes && alive.length > total * minShare; k++) {
     let best: Plane | null = null;
     let bestCount = 0;
-    for (let it = 0; it < 400; it++) {
+    for (let it = 0; it < 1500; it++) {
       const a = alive[Math.floor(rand() * alive.length)];
       const b = alive[Math.floor(rand() * alive.length)];
       const c = alive[Math.floor(rand() * alive.length)];
@@ -233,7 +236,8 @@ export function findPlanes(pts: Float32Array, thresholdM = 0.02, maxPlanes = 10,
       const n: [number, number, number] = [nn[0] / len, nn[1] / len, nn[2] / len];
       const d = -(n[0] * pts[3 * a] + n[1] * pts[3 * a + 1] + n[2] * pts[3 * a + 2]);
       let count = 0;
-      for (const i of alive) if (Math.abs(n[0] * pts[3 * i] + n[1] * pts[3 * i + 1] + n[2] * pts[3 * i + 2] + d) < thresholdM) count++;
+      for (const i of alive)
+        if (Math.abs(n[0] * pts[3 * i] + n[1] * pts[3 * i + 1] + n[2] * pts[3 * i + 2] + d) < distanceTolerance(thresholdM, pts[3 * i + 2], perMeter)) count++;
       if (count > bestCount) {
         bestCount = count;
         best = { n, d };
@@ -241,9 +245,17 @@ export function findPlanes(pts: Float32Array, thresholdM = 0.02, maxPlanes = 10,
     }
     if (!best || bestCount < total * minShare) break;
     // уточнение по найденным точкам, затем пересчёт точек плоскости
-    let inl = alive.filter((i) => Math.abs(best!.n[0] * pts[3 * i] + best!.n[1] * pts[3 * i + 1] + best!.n[2] * pts[3 * i + 2] + best!.d) < thresholdM);
+    let inl = alive.filter(
+      (i) =>
+        Math.abs(best!.n[0] * pts[3 * i] + best!.n[1] * pts[3 * i + 1] + best!.n[2] * pts[3 * i + 2] + best!.d) <
+        distanceTolerance(thresholdM, pts[3 * i + 2], perMeter),
+    );
     const refined = fitPlane(pts, inl);
-    inl = alive.filter((i) => Math.abs(refined.n[0] * pts[3 * i] + refined.n[1] * pts[3 * i + 1] + refined.n[2] * pts[3 * i + 2] + refined.d) < thresholdM);
+    inl = alive.filter(
+      (i) =>
+        Math.abs(refined.n[0] * pts[3 * i] + refined.n[1] * pts[3 * i + 1] + refined.n[2] * pts[3 * i + 2] + refined.d) <
+        distanceTolerance(thresholdM, pts[3 * i + 2], perMeter),
+    );
     const fin = fitPlane(pts, inl);
     let ss = 0;
     for (const i of inl) ss += (fin.n[0] * pts[3 * i] + fin.n[1] * pts[3 * i + 1] + fin.n[2] * pts[3 * i + 2] + fin.d) ** 2;
