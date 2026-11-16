@@ -122,7 +122,7 @@ S17. Пользователь выбирает длинный танец (нап
 | --- | --- |
 | specs/core/index.md | формат позы, бандл, запись сессии, профиль, скоринг (не создан) |
 | specs/studio/index.md | офлайн-подготовка треков, нарезка, коридоры допуска, возвраты, длинные танцы (draft) |
-| specs/player/index.md | живой режим, реплей, бюджет задержки (draft) |
+| specs/player/index.md, specs/player/ui.md | живой режим, реплей, бюджет задержки, экран и обратная связь (draft) |
 | specs/capture/index.md | слой захвата: PoseSource, трекеры Kinect SDK и Nuitrack, замеры (realisation) |
 | specs/hardware.md | сенсор, помещение, расстановка, замеры (draft) |
 | specs/datasets.md | источники эталонов, лицензии, размещение (draft) |
