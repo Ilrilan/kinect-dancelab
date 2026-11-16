@@ -11,6 +11,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{3C54F96C
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanceLab.Capture.Tests", "tests\DanceLab.Capture.Tests\DanceLab.Capture.Tests.csproj", "{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanceLab.Capture.Kinect", "src\DanceLab.Capture.Kinect\DanceLab.Capture.Kinect.csproj", "{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanceLab.Capture.Nuitrack", "src\DanceLab.Capture.Nuitrack\DanceLab.Capture.Nuitrack.csproj", "{40E84CC2-B775-4A2A-A66E-B78B88129284}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -28,9 +32,19 @@ Global
 		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Debug|Any CPU.Build.0 = Debug|x64
 		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Release|Any CPU.ActiveCfg = Release|x64
 		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Release|Any CPU.Build.0 = Release|x64
+		{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362}.Debug|Any CPU.Build.0 = Debug|x64
+		{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362}.Release|Any CPU.ActiveCfg = Release|x64
+		{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362}.Release|Any CPU.Build.0 = Release|x64
+		{40E84CC2-B775-4A2A-A66E-B78B88129284}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{40E84CC2-B775-4A2A-A66E-B78B88129284}.Debug|Any CPU.Build.0 = Debug|x64
+		{40E84CC2-B775-4A2A-A66E-B78B88129284}.Release|Any CPU.ActiveCfg = Release|x64
+		{40E84CC2-B775-4A2A-A66E-B78B88129284}.Release|Any CPU.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F} = {0398DA24-C01E-4579-95DF-C66B4977E35B}
 		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65} = {3C54F96C-BE9C-419E-9ACB-B217C6D29768}
+		{7649B3BD-6DB3-4E7F-96FA-EFFD24A18362} = {0398DA24-C01E-4579-95DF-C66B4977E35B}
+		{40E84CC2-B775-4A2A-A66E-B78B88129284} = {0398DA24-C01E-4579-95DF-C66B4977E35B}
 	EndGlobalSection
 EndGlobal

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>DanceLab.Capture.Nuitrack</RootNamespace>
+    <NuitrackNet Condition="'$(NuitrackNet)' == ''">$(MSBuildThisFileDirectory)..\..\data\third_party\nuitrack-sdk\Nuitrack\lib\csharp\nuitrack.net.dll</NuitrackNet>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="nuitrack.net">
+      <HintPath>$(NuitrackNet)</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <ProjectReference Include="..\DanceLab.Capture\DanceLab.Capture.csproj" />
+  </ItemGroup>
+</Project>

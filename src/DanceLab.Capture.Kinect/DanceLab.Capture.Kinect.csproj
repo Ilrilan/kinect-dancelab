@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>DanceLab.Capture.Kinect</RootNamespace>
+    <KinectAssemblies Condition="'$(KinectAssemblies)' == ''">C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Assemblies</KinectAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.Kinect">
+      <HintPath>$(KinectAssemblies)\Microsoft.Kinect.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <ProjectReference Include="..\DanceLab.Capture\DanceLab.Capture.csproj" />
+  </ItemGroup>
+</Project>
