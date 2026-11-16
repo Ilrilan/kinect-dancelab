@@ -15,6 +15,8 @@ namespace DanceLab.Capture.Tests
 
         public SensorInfo Sensor { get; }
 
+        public bool IsAvailable { get; set; } = true;
+
         public event Action<SkeletonFrame>? FrameReceived;
 
         public event Action<ImageFrame>? DepthReceived;

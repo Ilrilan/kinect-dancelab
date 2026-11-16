@@ -42,6 +42,9 @@ namespace DanceLab.Capture.Nuitrack
 
         public SensorInfo Sensor { get; private set; }
 
+        /// <summary>Nuitrack инициализирован, устройство найдено и насос работает.</summary>
+        public bool IsAvailable => running;
+
         /// <summary>Значение Skeletonization.Type, которое реально действует.</summary>
         public string? Engine { get; private set; }
 

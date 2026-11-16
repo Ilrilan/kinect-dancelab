@@ -41,6 +41,9 @@ namespace DanceLab.Capture.Kinect
 
         public SensorInfo Sensor { get; private set; }
 
+        /// <summary>Kinect SDK считает сенсор доступным (поток данных идёт).</summary>
+        public bool IsAvailable => sensor.IsAvailable;
+
         public string Version => typeof(KinectSensor).Assembly.GetName().Version?.ToString() ?? "unknown";
 
         public event Action<SkeletonFrame>? FrameReceived;

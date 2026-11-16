@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <RootNamespace>SensorProbe</RootNamespace>
+    <AssemblyName>sensor_probe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DanceLab.Capture\DanceLab.Capture.csproj" />
+    <ProjectReference Include="..\..\src\DanceLab.Capture.Kinect\DanceLab.Capture.Kinect.csproj" />
+    <ProjectReference Include="..\..\src\DanceLab.Capture.Nuitrack\DanceLab.Capture.Nuitrack.csproj" />
+  </ItemGroup>
+</Project>

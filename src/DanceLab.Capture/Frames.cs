@@ -135,6 +135,9 @@ namespace DanceLab.Capture
 
         SensorInfo Sensor { get; }
 
+        /// <summary>Сенсор отдаёт данные (для Kinect SDK это IsAvailable).</summary>
+        bool IsAvailable { get; }
+
         void Start();
 
         void Stop();

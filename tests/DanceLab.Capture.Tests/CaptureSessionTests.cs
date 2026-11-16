@@ -1,0 +1,112 @@
+using System;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using Xunit;
+
+namespace DanceLab.Capture.Tests
+{
+    public class CaptureSessionTests : IDisposable
+    {
+        private readonly string dir = Path.Combine(Path.GetTempPath(), "capture-session-" + Guid.NewGuid().ToString("N"));
+
+        public void Dispose()
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+
+        private static SensorInfo Sensor() => new SensorInfo("s1", "SN", new FrameSize(8, 4, 30, "Depth16"), new FrameSize(8, 4, 30, "Bgra"));
+
+        private static CaptureOptions Options(string dir, bool images, Func<long>? free = null) => new CaptureOptions
+        {
+            Scenario = "test",
+            RunDirectory = dir,
+            DurationSeconds = 1,
+            Images = images,
+            CountdownSeconds = 0,
+            WarmupMilliseconds = 10,
+            AvailabilityWaitMilliseconds = 500,
+            TrackerVersion = "t1",
+            FreeMemoryProvider = free ?? (() => 8L * 1024 * 1024 * 1024),
+        };
+
+        private static Thread Pump(FakePoseSource src, bool images, CancellationToken stop)
+        {
+            var t = new Thread(() =>
+            {
+                var i = 0;
+                while (!stop.IsCancellationRequested)
+                {
+                    src.PushSkeleton(1);
+                    if (images)
+                    {
+                        src.PushImages(1, 8, 4);
+                    }
+
+                    i++;
+                    Thread.Sleep(10);
+                }
+            })
+            { IsBackground = true };
+            t.Start();
+            return t;
+        }
+
+        [Fact]
+        public void SkeletonRunWritesFileWithFrames()
+        {
+            var src = new FakePoseSource(Sensor());
+            using var cts = new CancellationTokenSource();
+            var t = Pump(src, false, cts.Token);
+            var r = CaptureSession.Run(src, src, Options(dir, false));
+            cts.Cancel();
+            t.Join();
+            Assert.Equal(CaptureExitCode.Ok, r.Code);
+            Assert.InRange(r.SkeletonFrames, 20, 200);
+            using var reader = new SkeletonRecordReader(File.OpenRead(Path.Combine(dir, "skeleton.jsonl")));
+            Assert.Equal("test", reader.Header.Scenario);
+            Assert.Equal("t1", reader.Header.TrackerVersion);
+            Assert.Equal(r.SkeletonFrames, reader.ReadFrames().Count());
+            Assert.False(File.Exists(Path.Combine(dir, "depth.bin")));
+        }
+
+        [Fact]
+        public void ImageRunWritesDepthColorAndSkeleton()
+        {
+            var src = new FakePoseSource(Sensor());
+            using var cts = new CancellationTokenSource();
+            var t = Pump(src, true, cts.Token);
+            var r = CaptureSession.Run(src, src, Options(dir, true));
+            cts.Cancel();
+            t.Join();
+            Assert.Equal(CaptureExitCode.Ok, r.Code);
+            Assert.InRange(r.DepthFrames, 20, 200);
+            Assert.Equal(r.DepthFrames * 8 * 4 * 2, new FileInfo(Path.Combine(dir, "depth.bin")).Length);
+            Assert.Equal(r.ColorFrames * 8 * 4 * 4, new FileInfo(Path.Combine(dir, "color.bin")).Length);
+            Assert.True(File.Exists(Path.Combine(dir, "run.json")));
+            Assert.True(File.Exists(Path.Combine(dir, "skeleton.jsonl")));
+        }
+
+        [Fact]
+        public void LowMemoryRefusesToStartAndWritesNoRecording()
+        {
+            var src = new FakePoseSource(Sensor());
+            var r = CaptureSession.Run(src, src, Options(dir, true, () => 100));
+            Assert.Equal(CaptureExitCode.PreflightFailed, r.Code);
+            Assert.Contains("освободите", r.Message);
+            Assert.False(Directory.Exists(dir));
+        }
+
+        [Fact]
+        public void MissingSensorReturnsNoSensor()
+        {
+            var src = new FakePoseSource(Sensor()) { IsAvailable = false };
+            var r = CaptureSession.Run(src, src, Options(dir, false));
+            Assert.Equal(CaptureExitCode.NoSensor, r.Code);
+            Assert.False(Directory.Exists(dir));
+        }
+    }
+}
