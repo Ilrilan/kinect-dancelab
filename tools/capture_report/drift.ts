@@ -53,7 +53,9 @@ if (process.argv[1] && process.argv[1].endsWith('drift.ts')) {
     console.error('Использование: node tools/capture_report/drift.ts <папка captures> <шаблон> [--json]');
     process.exit(1);
   }
-  const dirs = readdirSync(root).filter((d) => d.includes(pattern)).sort();
+  const dirs = readdirSync(root)
+    .filter((d) => d.includes(pattern))
+    .sort();
   if (dirs.length === 0) {
     console.error('Нет прогонов с шаблоном ' + pattern);
     process.exit(1);
@@ -76,10 +78,13 @@ if (process.argv[1] && process.argv[1].endsWith('drift.ts')) {
     console.log(JSON.stringify(rows, null, 2));
   } else {
     console.log('прогон                              мин   пол,м  потолок,м  дальняя стена,м  шум 1-2 м, мм');
-    for (const r of rows) console.log(`${r.run.padEnd(34)} ${String(r.tMin).padStart(5)}  ${String(r.floorM).padStart(6)}  ${String(r.ceilingM).padStart(9)}  ${String(r.farWallM).padStart(15)}  ${String(r.noise1to2MmMedian).padStart(12)}`);
+    for (const r of rows)
+      console.log(
+        `${r.run.padEnd(34)} ${String(r.tMin).padStart(5)}  ${String(r.floorM).padStart(6)}  ${String(r.ceilingM).padStart(9)}  ${String(r.farWallM).padStart(15)}  ${String(r.noise1to2MmMedian).padStart(12)}`,
+      );
     for (const k of ['floorM', 'ceilingM', 'farWallM', 'noise1to2MmMedian'] as const) {
       const s = slopePerMin(rows, k);
-      console.log(`Наклон ${k}: ${s === null ? 'n/a' : (k === 'noise1to2MmMedian' ? s.toFixed(3) + ' мм/мин' : (s * 1000).toFixed(2) + ' мм/мин')}`);
+      console.log(`Наклон ${k}: ${s === null ? 'n/a' : k === 'noise1to2MmMedian' ? s.toFixed(3) + ' мм/мин' : (s * 1000).toFixed(2) + ' мм/мин'}`);
     }
   }
 }

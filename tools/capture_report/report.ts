@@ -107,11 +107,12 @@ export function analyze(header: Header, frames: Frame[]): Report {
   // первый человек в кадре
   const people = frames.map((f) => f.users[0]).filter((u) => u !== undefined);
   const byJoint = new Map<string, Joint[]>();
-  for (const u of people) for (const j of u.joints) {
-    const arr = byJoint.get(j.name) ?? [];
-    arr.push(j);
-    byJoint.set(j.name, arr);
-  }
+  for (const u of people)
+    for (const j of u.joints) {
+      const arr = byJoint.get(j.name) ?? [];
+      arr.push(j);
+      byJoint.set(j.name, arr);
+    }
   const jointNoiseCm: Report['jointNoiseCm'] = {};
   for (const [name, arr] of byJoint) {
     jointNoiseCm[name] = { x: std(arr.map((j) => j.x)) * 100, y: std(arr.map((j) => j.y)) * 100, z: std(arr.map((j) => j.z)) * 100 };
@@ -131,12 +132,13 @@ export function analyze(header: Header, frames: Frame[]): Report {
   const states: Record<string, number> = {};
   const confs: number[] = [];
   let total = 0;
-  for (const u of people) for (const j of u.joints) {
-    total++;
-    const s = j.state ?? 'none';
-    states[s] = (states[s] ?? 0) + 1;
-    if (typeof j.conf === 'number') confs.push(j.conf);
-  }
+  for (const u of people)
+    for (const j of u.joints) {
+      total++;
+      const s = j.state ?? 'none';
+      states[s] = (states[s] ?? 0) + 1;
+      if (typeof j.conf === 'number') confs.push(j.conf);
+    }
   for (const k of Object.keys(states)) states[k] = states[k] / total;
 
   const planes = frames.map((f) => f.scene?.floorPlane).filter((p): p is number[] => Array.isArray(p) && p.length === 4);
@@ -232,22 +234,36 @@ export function format(r: Report): string {
   out.push(`Кадров: ${r.frames}, длительность: ${f1(r.durationS)} с, частота по часам устройства: ${f1(r.fpsDevice)} кадр/с, по часам хоста: ${f1(r.fpsHost)}`);
   out.push(`Интервал между кадрами, мс: среднее ${f1(r.dtDeviceMs.mean)}, разброс ${f1(r.dtDeviceMs.std)}, максимум ${f1(r.dtDeviceMs.max)}`);
   out.push(`Кадров с человеком: ${r.framesWithUser} из ${r.frames}`);
-  out.push(`Состояния суставов: ${Object.entries(r.states).map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`).join(', ') || 'n/a'}${r.confMean !== null ? `, уверенность в среднем ${f2(r.confMean)}` : ''}`);
+  out.push(
+    `Состояния суставов: ${
+      Object.entries(r.states)
+        .map(([k, v]) => `${k} ${(v * 100).toFixed(1)}%`)
+        .join(', ') || 'n/a'
+    }${r.confMean !== null ? `, уверенность в среднем ${f2(r.confMean)}` : ''}`,
+  );
   const noise = Object.entries(r.jointNoiseCm);
   if (noise.length) {
     const allStd = noise.map(([, v]) => Math.hypot(v.x, v.y, v.z));
-    out.push(`Шум положения сустава (std по трём осям, см): среднее по суставам ${f2(allStd.reduce((a, b) => a + b, 0) / allStd.length)}, худший ${noise[allStd.indexOf(Math.max(...allStd))][0]} ${f2(Math.max(...allStd))}`);
+    out.push(
+      `Шум положения сустава (std по трём осям, см): среднее по суставам ${f2(allStd.reduce((a, b) => a + b, 0) / allStd.length)}, худший ${noise[allStd.indexOf(Math.max(...allStd))][0]} ${f2(Math.max(...allStd))}`,
+    );
   }
   const bones = Object.entries(r.boneLengthCm);
   if (bones.length) {
     out.push('Длины костей, см (среднее, std):');
     for (const [k, v] of bones) out.push(`  ${k}: ${f1(v.mean)}, ${f2(v.std)}`);
   }
-  out.push(r.floorPlane ? `Плоскость пола a,b,c,d: ${r.floorPlane.mean.map(f2).join(', ')} (std ${r.floorPlane.std.map(f2).join(', ')})` : 'Плоскость пола: трекер не отдаёт');
+  out.push(
+    r.floorPlane
+      ? `Плоскость пола a,b,c,d: ${r.floorPlane.mean.map(f2).join(', ')} (std ${r.floorPlane.std.map(f2).join(', ')})`
+      : 'Плоскость пола: трекер не отдаёт',
+  );
   out.push(`Смен знака разности плеч по x (переворот сторон): ${r.shoulderSignChanges}`);
-  out.push(r.repeatability
-    ? `Повторы движения рук: пиков ${r.repeatability.peaks}, период ${f2(r.repeatability.periodS.mean)} с (std ${f2(r.repeatability.periodS.std)}), высота пика ${f1(r.repeatability.peakHeightCm.mean)} см (std ${f2(r.repeatability.peakHeightCm.std)})`
-    : 'Повторы движения рук: не найдены (мало размаха или кадров)');
+  out.push(
+    r.repeatability
+      ? `Повторы движения рук: пиков ${r.repeatability.peaks}, период ${f2(r.repeatability.periodS.mean)} с (std ${f2(r.repeatability.periodS.std)}), высота пика ${f1(r.repeatability.peakHeightCm.mean)} см (std ${f2(r.repeatability.peakHeightCm.std)})`
+      : 'Повторы движения рук: не найдены (мало размаха или кадров)',
+  );
   return out.join('\n');
 }
 

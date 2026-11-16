@@ -64,3 +64,4 @@ desktop.ini
 
 # --- Claude Code: локальные настройки не шарим, общие (settings.json) шарим ---
 .claude/settings.local.json
+node_modules/

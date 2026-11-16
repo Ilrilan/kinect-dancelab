@@ -103,13 +103,15 @@ export function noiseByDistance(c: DepthCube, s: PixelStats, binM = 0.5, minVali
     bins.set(b, arr);
   }
   const q = (a: number[], p: number): number => a.sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(p * a.length))];
-  return [...bins.entries()].sort((a, b) => a[0] - b[0]).map(([b, arr]) => ({
-    fromM: b * binM,
-    toM: (b + 1) * binM,
-    pixels: arr.length,
-    stdMmMedian: q(arr, 0.5),
-    stdMmP90: q(arr, 0.9),
-  }));
+  return [...bins.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([b, arr]) => ({
+      fromM: b * binM,
+      toM: (b + 1) * binM,
+      pixels: arr.length,
+      stdMmMedian: q(arr, 0.5),
+      stdMmP90: q(arr, 0.9),
+    }));
 }
 
 export function backproject(u: number, v: number, zMm: number, k: Intrinsics): [number, number, number] {
@@ -124,36 +126,41 @@ function cross(a: number[], b: number[]): [number, number, number] {
 // Собственный вектор наименьшего собственного значения симметричной матрицы 3x3 (метод Якоби).
 function smallestEigenvector(m: number[][]): [number, number, number] {
   const a = m.map((r) => r.slice());
-  const v = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const v = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
   for (let sweep = 0; sweep < 30; sweep++) {
     let off = 0;
     for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) off += a[i][j] ** 2;
     if (off < 1e-24) break;
-    for (let p = 0; p < 2; p++) for (let q = p + 1; q < 3; q++) {
-      if (Math.abs(a[p][q]) < 1e-30) continue;
-      const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
-      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
-      const c = 1 / Math.sqrt(t * t + 1);
-      const s = t * c;
-      for (let k = 0; k < 3; k++) {
-        const akp = a[k][p];
-        const akq = a[k][q];
-        a[k][p] = c * akp - s * akq;
-        a[k][q] = s * akp + c * akq;
+    for (let p = 0; p < 2; p++)
+      for (let q = p + 1; q < 3; q++) {
+        if (Math.abs(a[p][q]) < 1e-30) continue;
+        const theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+        const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+        const c = 1 / Math.sqrt(t * t + 1);
+        const s = t * c;
+        for (let k = 0; k < 3; k++) {
+          const akp = a[k][p];
+          const akq = a[k][q];
+          a[k][p] = c * akp - s * akq;
+          a[k][q] = s * akp + c * akq;
+        }
+        for (let k = 0; k < 3; k++) {
+          const apk = a[p][k];
+          const aqk = a[q][k];
+          a[p][k] = c * apk - s * aqk;
+          a[q][k] = s * apk + c * aqk;
+        }
+        for (let k = 0; k < 3; k++) {
+          const vkp = v[k][p];
+          const vkq = v[k][q];
+          v[k][p] = c * vkp - s * vkq;
+          v[k][q] = s * vkp + c * vkq;
+        }
       }
-      for (let k = 0; k < 3; k++) {
-        const apk = a[p][k];
-        const aqk = a[q][k];
-        a[p][k] = c * apk - s * aqk;
-        a[q][k] = s * apk + c * aqk;
-      }
-      for (let k = 0; k < 3; k++) {
-        const vkp = v[k][p];
-        const vkq = v[k][q];
-        v[k][p] = c * vkp - s * vkq;
-        v[k][q] = s * vkp + c * vkq;
-      }
-    }
   }
   let best = 0;
   for (let i = 1; i < 3; i++) if (a[i][i] < a[best][best]) best = i;
@@ -172,7 +179,11 @@ export function fitPlane(pts: Float32Array, idx: number[]): Plane {
   cx /= idx.length;
   cy /= idx.length;
   cz /= idx.length;
-  const m = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  const m = [
+    [0, 0, 0],
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
   for (const i of idx) {
     const d = [pts[3 * i] - cx, pts[3 * i + 1] - cy, pts[3 * i + 2] - cz];
     for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) m[r][q] += d[r] * d[q];
@@ -400,7 +411,8 @@ export function analyzeScene(c: DepthCube, hints: { intrinsics: Intrinsics | nul
   const ceilingPlane = classified.find((cl) => cl.kind === 'ceiling');
   const walls = classified.filter((cl) => cl.kind === 'wall');
   const wallAngles: SceneReport['wallAnglesDeg'] = [];
-  for (let i = 0; i < walls.length; i++) for (let j = i + 1; j < walls.length; j++) wallAngles.push({ a: i, b: j, deg: Number(angleDeg(walls[i].normal, walls[j].normal).toFixed(2)) });
+  for (let i = 0; i < walls.length; i++)
+    for (let j = i + 1; j < walls.length; j++) wallAngles.push({ a: i, b: j, deg: Number(angleDeg(walls[i].normal, walls[j].normal).toFixed(2)) });
 
   return {
     frames: c.count,
@@ -412,24 +424,42 @@ export function analyzeScene(c: DepthCube, hints: { intrinsics: Intrinsics | nul
     floorFromTracker: floorN && floorH !== null ? { normal: floorN.map((x) => Number(x.toFixed(4))), heightM: Number(floorH.toFixed(3)) } : null,
     planes,
     roomHeightM: floorPlane && ceilingPlane ? Number((floorPlane.dist + ceilingPlane.dist).toFixed(3)) : null,
-    floorVsTracker: floorPlane && floorN && floorH !== null ? { normalAngleDeg: Number(angleDeg(floorPlane.normal, floorN).toFixed(2)), heightDiffMm: Number(((floorPlane.dist - floorH) * 1000).toFixed(1)) } : null,
+    floorVsTracker:
+      floorPlane && floorN && floorH !== null
+        ? { normalAngleDeg: Number(angleDeg(floorPlane.normal, floorN).toFixed(2)), heightDiffMm: Number(((floorPlane.dist - floorH) * 1000).toFixed(1)) }
+        : null,
     wallAnglesDeg: wallAngles,
   };
 }
 
 export function formatScene(r: SceneReport): string {
   const out: string[] = [];
-  out.push(`Кадров глубины: ${r.frames}, ${r.size[0]}x${r.size[1]}, параметры камеры ${r.intrinsicsFromTracker ? 'от трекера' : 'типовые'}: fx ${r.intrinsics.fx.toFixed(1)}, fy ${r.intrinsics.fy.toFixed(1)}, cx ${r.intrinsics.cx.toFixed(1)}, cy ${r.intrinsics.cy.toFixed(1)}`);
+  out.push(
+    `Кадров глубины: ${r.frames}, ${r.size[0]}x${r.size[1]}, параметры камеры ${r.intrinsicsFromTracker ? 'от трекера' : 'типовые'}: fx ${r.intrinsics.fx.toFixed(1)}, fy ${r.intrinsics.fy.toFixed(1)}, cx ${r.intrinsics.cx.toFixed(1)}, cy ${r.intrinsics.cy.toFixed(1)}`,
+  );
   out.push(`Пикселей без данных больше чем в половине кадров: ${(r.invalidPixelShare * 100).toFixed(1)}%`);
   out.push('Шум глубины (std по времени у неподвижных пикселей), мм:');
-  for (const b of r.noise) out.push(`  ${b.fromM.toFixed(1)}-${b.toM.toFixed(1)} м: медиана ${b.stdMmMedian.toFixed(2)}, 90-й процентиль ${b.stdMmP90.toFixed(2)}, пикселей ${b.pixels}`);
-  out.push(r.floorFromTracker ? `Пол по данным трекера: нормаль ${r.floorFromTracker.normal.join(', ')}, высота сенсора ${r.floorFromTracker.heightM} м` : 'Пол по данным трекера: нет');
+  for (const b of r.noise)
+    out.push(
+      `  ${b.fromM.toFixed(1)}-${b.toM.toFixed(1)} м: медиана ${b.stdMmMedian.toFixed(2)}, 90-й процентиль ${b.stdMmP90.toFixed(2)}, пикселей ${b.pixels}`,
+    );
+  out.push(
+    r.floorFromTracker
+      ? `Пол по данным трекера: нормаль ${r.floorFromTracker.normal.join(', ')}, высота сенсора ${r.floorFromTracker.heightM} м`
+      : 'Пол по данным трекера: нет',
+  );
   out.push('Найденные плоскости (по глубине):');
   for (const p of r.planes) {
-    out.push(`  ${p.kind}: протяжённость ${p.extentM[0]} на ${p.extentM[1]} м, расстояние ${p.distanceM} м, доля точек ${(p.share * 100).toFixed(1)}%, невязка ${p.rmsMm} мм, нормаль ${p.normal.join(', ')}${p.angleToTrackerFloorDeg !== null ? `, угол к полу трекера ${p.angleToTrackerFloorDeg}°` : ''}`);
+    out.push(
+      `  ${p.kind}: протяжённость ${p.extentM[0]} на ${p.extentM[1]} м, расстояние ${p.distanceM} м, доля точек ${(p.share * 100).toFixed(1)}%, невязка ${p.rmsMm} мм, нормаль ${p.normal.join(', ')}${p.angleToTrackerFloorDeg !== null ? `, угол к полу трекера ${p.angleToTrackerFloorDeg}°` : ''}`,
+    );
     if (p.driftMmPerS !== null) out.push(`      стабильность: дрейф ${p.driftMmPerS} мм/с, разброс по кадрам ${p.perFrameOffsetStdMm} мм`);
   }
-  out.push(r.floorVsTracker ? `Пол по глубине против трекера: угол между нормалями ${r.floorVsTracker.normalAngleDeg}°, разница высоты ${r.floorVsTracker.heightDiffMm} мм` : 'Пол по глубине не найден или нет данных трекера для сравнения');
+  out.push(
+    r.floorVsTracker
+      ? `Пол по глубине против трекера: угол между нормалями ${r.floorVsTracker.normalAngleDeg}°, разница высоты ${r.floorVsTracker.heightDiffMm} мм`
+      : 'Пол по глубине не найден или нет данных трекера для сравнения',
+  );
   if (r.roomHeightM !== null) out.push(`Высота помещения (пол плюс потолок по глубине): ${r.roomHeightM} м`);
   for (const a of r.wallAnglesDeg) out.push(`Угол между стенами ${a.a + 1} и ${a.b + 1}: ${a.deg}°`);
   return out.join('\n');

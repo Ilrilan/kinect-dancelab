@@ -25,7 +25,10 @@ const logPath = join(root, `download-${bitrate}.log`);
 mkdirSync(outDir, { recursive: true });
 
 const lines = (path: string): string[] =>
-  readFileSync(path, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  readFileSync(path, 'utf8')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 // gBR_sBM_cAll_d04_mBR0_ch01 -> gBR_sBM_c##_d04_mBR0_ch01 (девять ракурсов)
 const wanted = new Set(lines(join(root, 'lists', 'motions_have.txt')).map((n) => n.replace('_cAll_', '_c##_')));

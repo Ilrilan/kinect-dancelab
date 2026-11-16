@@ -36,7 +36,12 @@ export function encodePng(width: number, height: number, rgb: Uint8Array): Buffe
   ihdr.writeUInt32BE(height, 4);
   ihdr[8] = 8;
   ihdr[9] = 2;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', new Uint8Array(0))]);
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', new Uint8Array(0)),
+  ]);
 }
 
 const clamp = (v: number): number => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));

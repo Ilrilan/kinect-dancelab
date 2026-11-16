@@ -16,7 +16,11 @@ const exe = 'tools/sensor_probe/bin/x64/Debug/net48/sensor_probe.exe';
 
 for (let i = 1; i <= runs; i++) {
   const started = new Date().toISOString();
-  const r = spawnSync(exe, ['--tracker', tracker, '--scenario', `drift-${String(i).padStart(2, '0')}`, '--mode', 'depthcolor', '--duration', duration, '--countdown', '0'], { stdio: 'inherit' });
+  const r = spawnSync(
+    exe,
+    ['--tracker', tracker, '--scenario', `drift-${String(i).padStart(2, '0')}`, '--mode', 'depthcolor', '--duration', duration, '--countdown', '0'],
+    { stdio: 'inherit' },
+  );
   console.log(`${started} прогон ${i}/${runs} код ${r.status}`);
   if (r.status === 3) break;
   if (i < runs) await new Promise((resolve) => setTimeout(resolve, gap * 1000));

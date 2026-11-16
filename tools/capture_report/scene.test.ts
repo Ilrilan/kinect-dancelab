@@ -82,7 +82,13 @@ test('комната: пол, потолок, стены, высота поме�
   assert.ok(ceiling && Math.abs(ceiling.distanceM - 1.5) < 0.02, 'потолок');
   assert.ok(rep.roomHeightM !== null && Math.abs(rep.roomHeightM - 2.12) < 0.03, 'высота ' + rep.roomHeightM);
   assert.equal(walls.length, 2);
-  assert.deepEqual(walls.map((w) => w.distanceM).sort((a, b) => a - b).map((v) => Math.round(v * 10) / 10), [1.8, 4.5]);
+  assert.deepEqual(
+    walls
+      .map((w) => w.distanceM)
+      .sort((a, b) => a - b)
+      .map((v) => Math.round(v * 10) / 10),
+    [1.8, 4.5],
+  );
   assert.ok(rep.floorVsTracker && rep.floorVsTracker.normalAngleDeg < 0.5 && Math.abs(rep.floorVsTracker.heightDiffMm) < 15);
   const angle = rep.wallAnglesDeg[0].deg;
   assert.ok(Math.abs(angle - 90) < 1, 'угол между стенами ' + angle);

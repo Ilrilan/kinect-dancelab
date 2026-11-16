@@ -1,0 +1,22 @@
+{
+  "name": "dancelab-tools",
+  "private": true,
+  "type": "module",
+  "description": "Скрипты проекта DanceLab на Node TS (запуск без сборки, Node 24)",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint tools",
+    "format": "prettier --write \"tools/**/*.ts\"",
+    "format:check": "prettier --check \"tools/**/*.ts\"",
+    "test": "node --test tools/capture_report/report.test.ts tools/capture_report/scene.test.ts",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@eslint/js": "^9.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.3.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}
