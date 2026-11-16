@@ -1,6 +1,6 @@
 # Слой захвата
 
-> Status: draft
+> Status: scenarios
 > Parent: [../system.md](../system.md)
 > Происхождение: решение владельца 2026-11-16: сразу делать слой захвата, а не одноразовый зонд, потому что он войдёт в основное приложение. Язык C#. Остальное предложено агентом и ждёт подтверждения.
 
@@ -46,7 +46,7 @@
 
 ## Scenarios
 
-Сценарии выведены из слов владельца 2026-11-16 и ждут подтверждения.
+Сценарии S1-S5 подтверждены владельцем 2026-11-16. Контракт ниже проработан агентом по делегированию владельца и ждёт подтверждения.
 
 S1. Слой захвата отдаёт для каждого кадра координаты суставов скелета и временную метку этого кадра.
 
@@ -70,3 +70,78 @@ S5. Отдельным режимом зонд записывает 5-10 сек�
 - Одновременная запись обоими трекерами.
 - Скоринг и сравнение внутри слоя захвата.
 - Перевод в каноническую позу (это Core).
+
+---
+
+## Contract
+
+Контракт на первую версию. Состав суставов и имена у каждого трекера свои, перевод в каноническую позу делает Core (системный спек, S13).
+
+### Проекты
+
+- src/DanceLab.Capture: библиотека, цель net48, платформа x64. Содержит интерфейс IPoseSource, типы кадров, запись и чтение формата замеров, проверку памяти. Не ссылается на SDK трекеров.
+- src/DanceLab.Capture.Kinect: реализация на Kinect SDK 2.0 (Microsoft.Kinect.dll из C:Program FilesMicrosoft SDKsKinect2.0_1409Assemblies).
+- src/DanceLab.Capture.Nuitrack: реализация на Nuitrack (nuitrack.net.dll из репозитория 3DiVi/nuitrack-sdk, берётся при сборке из data/third_party, в наш репозиторий не копируется; версия 1.0.9678). Нужен nuitrack.config с Skeletonization.Type CNN_HPE для режима AI.
+- tools/sensor_probe: консольная программа, цель net48, x64. Выбирает реализацию, пишет замеры.
+- Тесты: проект tests/DanceLab.Capture.Tests (xUnit, net48). Сенсор в них не нужен.
+
+### Интерфейс
+
+Сигнатуры на C# (в коде будут в пространстве имён DanceLab.Capture).
+
+- interface IPoseSource : IDisposable
+  - string TrackerId { get; } // kinect-sdk-2 или nuitrack
+  - SensorInfo Sensor { get; }
+  - void Start()
+  - void Stop()
+  - event Action<SkeletonFrame> FrameReceived
+- sealed class SensorInfo: string Id, string Serial, FrameSize Depth, FrameSize Color
+- sealed class FrameSize: int Width, int Height, double Fps, string Format
+- sealed class SkeletonFrame: long DeviceTimeUs, long HostTimeUtcTicks, IReadOnlyList<TrackedUser> Users, SceneInfo Scene (может быть null)
+- sealed class TrackedUser: int Id, IReadOnlyList<RawJoint> Joints
+- sealed class RawJoint: string Name, double X, double Y, double Z, double? Conf, string State (tracked, inferred, not-tracked или null)
+- sealed class SceneInfo: double[] FloorPlane (4 числа или null), IReadOnlyDictionary<string, object> Other
+
+Правила:
+
+- События вызываются на потоке трекера, подписчик не должен блокировать. Запись не должна задерживать трекер.
+- Данные кадра неизменяемы после выдачи.
+- Единицы: метры, система координат сенсора как её отдаёт трекер (без поворота и переноса).
+- Имена суставов как у трекера, без перевода.
+
+### Запись замеров скелета
+
+Файл skeleton.jsonl по схеме specs/capture/schemas/capture-record.schema.json: первая строка header, далее frame по кадру. Записывается через буфер с асинхронной записью на диск, потеря кадров при медленном диске недопустима (если буфер переполнен, запись останавливается с ошибкой, а не пропускает кадры молча).
+
+### Запись глубины и цвета (S5)
+
+Папка прогона: data/captures/<дата-время>_<трекер>_<сценарий>/, внутри:
+
+- run.json: тот же заголовок, что в схеме (header), плюс frames.depth, frames.color: число кадров, размер кадра в байтах, формат пикселя.
+- depth.bin: подряд кадры глубины, каждый width*height значений uint16 little endian (миллиметры, как отдаёт трекер).
+- color.bin: подряд кадры цвета в формате, который отдаёт трекер (формат записан в run.json), без сжатия.
+- depth.times.jsonl и color.times.jsonl: на кадр строка с n, deviceTimeUs, hostTimeUtcTicks.
+- skeleton.jsonl: скелет того же прогона по схеме выше.
+
+Предпроверка памяти: оценка объёма = кадров × (размер кадра глубины + размер кадра цвета). Запись начинается, если свободной физической памяти не меньше оценки × 1,5. Иначе программа завершается с сообщением, сколько памяти освободить. Буфер выделяется заранее: массив блоков по числу кадров, блок на кадр.
+
+### Командная строка зонда
+
+sensor_probe --tracker kinect|nuitrack --scenario <имя> --mode skeleton|depthcolor --duration <секунд> --sensor-id <имя> --out <папка>
+
+- mode skeleton: пишет skeleton.jsonl, длительность по умолчанию 10 секунд (статика) или до Ctrl+C.
+- mode depthcolor: пишет папку прогона, длительность 5-10 секунд.
+- Код выхода 0 при успехе, 2 при отказе предпроверки, 3 при отсутствии сенсора, 4 при переполнении буфера.
+
+### Проверка
+
+- Круговой тест формата: запись набора фиктивных кадров через writer, чтение reader, сравнение.
+- Проверка схемы: каждая строка тестовых файлов проходит JSON Schema.
+- Фиктивный IPoseSource, подающий детерминированные кадры, для проверки того, что запись не теряет кадры и не блокирует источник.
+- Тест предпроверки памяти: при недостатке памяти запись не начинается.
+- Реальные трекеры проверяются вручную на сенсоре по набору записей из раздела выше, результат в docs/sensor-measurements.md.
+
+### Не определено на этом уровне
+
+- Формат записи сессии (Core), перевод суставов трекеров в каноническую позу (Core).
+- Привязка кадров к сцене (идентификаторы сенсоров в сцене определит Core, зонд принимает имя из командной строки).

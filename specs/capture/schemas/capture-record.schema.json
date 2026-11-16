@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dancelab/capture-record/1",
+  "title": "Запись замеров слоя захвата, версия 1 (JSON Lines)",
+  "description": "Файл skeleton.jsonl: первая строка Header, остальные строки Frame. Одна строка JSON на кадр.",
+  "oneOf": [
+    { "$ref": "#/$defs/header" },
+    { "$ref": "#/$defs/frame" }
+  ],
+  "$defs": {
+    "header": {
+      "type": "object",
+      "required": ["kind", "formatVersion", "tracker", "sensor", "recordedAtUtc", "scenario"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "header" },
+        "formatVersion": { "const": 1 },
+        "tracker": {
+          "type": "object",
+          "required": ["id", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "enum": ["kinect-sdk-2", "nuitrack"] },
+            "version": { "type": "string" },
+            "engine": { "type": "string", "description": "Для Nuitrack значение Skeletonization.Type из nuitrack.config (например CNN_HPE), если известно." }
+          }
+        },
+        "sensor": {
+          "type": "object",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "description": "Идентификатор сенсора. В первой версии сцены один сенсор, имя задаёт запускающий." },
+            "serial": { "type": "string" },
+            "depth": { "$ref": "#/$defs/frameSize" },
+            "color": { "$ref": "#/$defs/frameSize" }
+          }
+        },
+        "recordedAtUtc": { "type": "string", "format": "date-time" },
+        "scenario": { "type": "string", "description": "Имя записи из набора спека (статика лицом, разворот, повтор и т. д.)." },
+        "note": { "type": "string" }
+      }
+    },
+    "frameSize": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "fps": { "type": "number" },
+        "format": { "type": "string" }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "required": ["kind", "n", "deviceTimeUs", "hostTimeUtcTicks", "users"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "frame" },
+        "n": { "type": "integer", "minimum": 0, "description": "Порядковый номер кадра в файле." },
+        "deviceTimeUs": { "type": "integer", "description": "Время кадра по часам устройства, микросекунды. Начало отсчёта у каждого трекера своё." },
+        "hostTimeUtcTicks": { "type": "integer", "description": "Время получения кадра на хосте, тики .NET (100 нс) от 0001-01-01 UTC." },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "joints"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "integer", "description": "Идентификатор человека, назначенный трекером." },
+              "joints": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["name", "x", "y", "z"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": { "type": "string", "description": "Имя сустава как у трекера, без перевода в нашу систему." },
+                    "x": { "type": "number" },
+                    "y": { "type": "number" },
+                    "z": { "type": "number" },
+                    "conf": { "type": ["number", "null"], "description": "Уверенность 0..1, если трекер её даёт." },
+                    "state": { "enum": ["tracked", "inferred", "not-tracked"], "description": "Состояние, если трекер его даёт (Kinect SDK)." }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "scene": {
+          "type": "object",
+          "description": "Сведения о сцене, которые трекер отдаёт сам. Поле отсутствует, если трекер ничего не даёт.",
+          "additionalProperties": false,
+          "properties": {
+            "floorPlane": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 4,
+              "maxItems": 4,
+              "description": "Плоскость пола a, b, c, d (ax+by+cz+d=0) в системе координат сенсора, метры."
+            },
+            "other": { "type": "object", "description": "Прочее, что трекер сообщил, как есть." }
+          }
+        }
+      }
+    }
+  }
+}
