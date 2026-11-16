@@ -80,7 +80,7 @@ S5. Отдельным режимом зонд записывает 5-10 сек�
 ### Проекты
 
 - src/DanceLab.Capture: библиотека, цель net48, платформа x64. Содержит интерфейс IPoseSource, типы кадров, запись и чтение формата замеров, проверку памяти. Не ссылается на SDK трекеров.
-- src/DanceLab.Capture.Kinect: реализация на Kinect SDK 2.0 (Microsoft.Kinect.dll из C:Program FilesMicrosoft SDKsKinect2.0_1409Assemblies).
+- src/DanceLab.Capture.Kinect: реализация на Kinect SDK 2.0 (Microsoft.Kinect.dll из C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Assemblies).
 - src/DanceLab.Capture.Nuitrack: реализация на Nuitrack (nuitrack.net.dll из репозитория 3DiVi/nuitrack-sdk, берётся при сборке из data/third_party, в наш репозиторий не копируется; версия 1.0.9678). Нужен nuitrack.config с Skeletonization.Type CNN_HPE для режима AI.
 - tools/sensor_probe: консольная программа, цель net48, x64. Выбирает реализацию, пишет замеры.
 - Тесты: проект tests/DanceLab.Capture.Tests (xUnit, net48). Сенсор в них не нужен.
@@ -95,6 +95,12 @@ S5. Отдельным режимом зонд записывает 5-10 сек�
   - void Start()
   - void Stop()
   - event Action<SkeletonFrame> FrameReceived
+- interface IRawImageSource: IDisposable (реализуется теми же классами, что IPoseSource; нужен для режима замеров глубины и цвета, S5)
+  - void StartImages()
+  - void StopImages()
+  - event Action<ImageFrame> DepthReceived
+  - event Action<ImageFrame> ColorReceived
+- sealed class ImageFrame: long DeviceTimeUs, long HostTimeUtcTicks, int Width, int Height, string Format, byte[] Data (кадр как отдал трекер, без преобразования; буфер принадлежит получателю)
 - sealed class SensorInfo: string Id, string Serial, FrameSize Depth, FrameSize Color
 - sealed class FrameSize: int Width, int Height, double Fps, string Format
 - sealed class SkeletonFrame: long DeviceTimeUs, long HostTimeUtcTicks, IReadOnlyList<TrackedUser> Users, SceneInfo Scene (может быть null)
