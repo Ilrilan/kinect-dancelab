@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{0398DA24-C01E-4579-95DF-C66B4977E35B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanceLab.Capture", "src\DanceLab.Capture\DanceLab.Capture.csproj", "{E6C04A02-C2EC-4312-9D7F-FCEDC785096F}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{3C54F96C-BE9C-419E-9ACB-B217C6D29768}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DanceLab.Capture.Tests", "tests\DanceLab.Capture.Tests\DanceLab.Capture.Tests.csproj", "{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F}.Debug|Any CPU.Build.0 = Debug|x64
+		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F}.Release|Any CPU.ActiveCfg = Release|x64
+		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F}.Release|Any CPU.Build.0 = Release|x64
+		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Debug|Any CPU.Build.0 = Debug|x64
+		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Release|Any CPU.ActiveCfg = Release|x64
+		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65}.Release|Any CPU.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{E6C04A02-C2EC-4312-9D7F-FCEDC785096F} = {0398DA24-C01E-4579-95DF-C66B4977E35B}
+		{B03A7668-210E-4F4D-9CD1-CD29EFB25F65} = {3C54F96C-BE9C-419E-9ACB-B217C6D29768}
+	EndGlobalSection
+EndGlobal
