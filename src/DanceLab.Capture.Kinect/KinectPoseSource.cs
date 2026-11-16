@@ -21,6 +21,7 @@ namespace DanceLab.Capture.Kinect
         private Body[]? bodies;
         private ushort[]? depthBuffer;
         private int opened;
+        private bool intrinsicsSent;
         private bool disposed;
 
         public KinectPoseSource(string sensorId)
@@ -209,7 +210,24 @@ namespace DanceLab.Capture.Kinect
 
                 var plane = frame.FloorClipPlane;
                 double[]? floor = (plane.X == 0 && plane.Y == 0 && plane.Z == 0 && plane.W == 0) ? null : new double[] { plane.X, plane.Y, plane.Z, plane.W };
-                var scene = floor == null ? null : new SceneInfo(floor);
+                Dictionary<string, object>? other = null;
+                if (!intrinsicsSent)
+                {
+                    intrinsicsSent = true;
+                    var k = sensor.CoordinateMapper.GetDepthCameraIntrinsics();
+                    other = new Dictionary<string, object>
+                    {
+                        { "depthFx", (double)k.FocalLengthX },
+                        { "depthFy", (double)k.FocalLengthY },
+                        { "depthCx", (double)k.PrincipalPointX },
+                        { "depthCy", (double)k.PrincipalPointY },
+                        { "depthRadialK2", (double)k.RadialDistortionSecondOrder },
+                        { "depthRadialK4", (double)k.RadialDistortionFourthOrder },
+                        { "depthRadialK6", (double)k.RadialDistortionSixthOrder },
+                    };
+                }
+
+                var scene = (floor == null && other == null) ? null : new SceneInfo(floor, other);
                 handler(new SkeletonFrame((long)(frame.RelativeTime.TotalMilliseconds * 1000.0), host, users, scene));
             }
         }
