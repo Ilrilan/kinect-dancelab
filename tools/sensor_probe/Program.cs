@@ -98,7 +98,7 @@ namespace SensorProbe
         {
             public IPoseSource Pose = null!;
             public IRawImageSource Images = null!;
-            public string Version = string.Empty;
+            public Func<string> Version = () => "unknown";
             public Func<string?> LastError = () => null;
             public Func<string?>? Engine;
         }
@@ -107,7 +107,7 @@ namespace SensorProbe
         private static Handle CreateKinect(Options o)
         {
             var s = new DanceLab.Capture.Kinect.KinectPoseSource(o.SensorId);
-            return new Handle { Pose = s, Images = s, Version = s.Version };
+            return new Handle { Pose = s, Images = s, Version = () => s.Version };
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -115,7 +115,7 @@ namespace SensorProbe
         {
             var engine = o.NuitrackEngine == "config" ? null : o.NuitrackEngine;
             var s = new DanceLab.Capture.Nuitrack.NuitrackPoseSource(o.SensorId, engine);
-            return new Handle { Pose = s, Images = s, Version = s.Version, LastError = () => s.LastError, Engine = () => s.Engine };
+            return new Handle { Pose = s, Images = s, Version = () => s.Version, LastError = () => s.LastError, Engine = () => s.Engine };
         }
 
         private static int Run(Options o)
@@ -127,7 +127,7 @@ namespace SensorProbe
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("Нет сенсора или трекера: " + ex.Message);
+                Console.Error.WriteLine("Нет сенсора или трекера: " + ex.GetType().Name + ": " + ex.Message);
                 return ExitNoSensor;
             }
 
@@ -141,7 +141,7 @@ namespace SensorProbe
                     DurationSeconds = o.Duration,
                     Images = o.Mode == "depthcolor",
                     CountdownSeconds = o.Countdown,
-                    TrackerVersion = h.Version,
+                    VersionProvider = h.Version,
                     EngineProvider = h.Engine,
                     Log = Console.WriteLine,
                 };

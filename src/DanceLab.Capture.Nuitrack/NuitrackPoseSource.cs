@@ -48,15 +48,14 @@ namespace DanceLab.Capture.Nuitrack
         /// <summary>Значение Skeletonization.Type, которое реально действует.</summary>
         public string? Engine { get; private set; }
 
-        public string Version => Nuitrack_GetVersion();
+        /// <summary>Версия Nuitrack, известна после Start или StartImages, до этого unknown.</summary>
+        public string Version { get; private set; } = "unknown";
 
         public event Action<SkeletonFrame>? FrameReceived;
 
         public event Action<ImageFrame>? DepthReceived;
 
         public event Action<ImageFrame>? ColorReceived;
-
-        private static string Nuitrack_GetVersion() => nuitrack.Nuitrack.GetVersion().ToString();
 
         public void Start()
         {
@@ -113,6 +112,7 @@ namespace DanceLab.Capture.Nuitrack
 
             nuitrack.Nuitrack.Init();
             initialized = true;
+            Version = nuitrack.Nuitrack.GetVersion().ToString();
             var devices = nuitrack.Nuitrack.GetDeviceList();
             if (devices.Count == 0)
             {

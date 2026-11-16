@@ -33,6 +33,9 @@ namespace DanceLab.Capture
 
         public string TrackerVersion { get; set; } = "unknown";
 
+        /// <summary>Версия трекера, если она известна только после запуска источника (Nuitrack).</summary>
+        public Func<string>? VersionProvider { get; set; }
+
         /// <summary>Возвращает режим трекера (например Skeletonization.Type) после запуска источника.</summary>
         public Func<string?>? EngineProvider { get; set; }
 
@@ -100,7 +103,7 @@ namespace DanceLab.Capture
                 }
 
                 var sensor = pose.Sensor;
-                var header = new RunHeader(pose.TrackerId, o.TrackerVersion, o.EngineProvider?.Invoke(), sensor, DateTimeOffset.UtcNow, o.Scenario);
+                var header = new RunHeader(pose.TrackerId, o.VersionProvider?.Invoke() ?? o.TrackerVersion, o.EngineProvider?.Invoke(), sensor, DateTimeOffset.UtcNow, o.Scenario);
 
                 var depthCap = 0;
                 var colorCap = 0;
