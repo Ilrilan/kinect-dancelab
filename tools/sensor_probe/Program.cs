@@ -28,6 +28,7 @@ namespace SensorProbe
             public string NuitrackEngine = "CNN_HPE";
             public int Countdown = 3;
             public bool NoColorSensor;
+            public System.Collections.Generic.List<string> NuitrackSet = new System.Collections.Generic.List<string>();
         }
 
         private static int Usage(string message)
@@ -67,6 +68,7 @@ namespace SensorProbe
                         case "--sensor-id": o.SensorId = Next(); break;
                         case "--out": o.Out = Next(); break;
                         case "--nuitrack-engine": o.NuitrackEngine = Next(); break;
+                        case "--nuitrack-set": o.NuitrackSet.Add(Next()); break;
                         case "--no-color-sensor": o.NoColorSensor = true; break;
                         case "--countdown": o.Countdown = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                         default: return Usage("Неизвестный аргумент: " + args[i]);
@@ -103,6 +105,7 @@ namespace SensorProbe
             public Func<string> Version = () => "unknown";
             public Func<string?> LastError = () => null;
             public Func<string?>? Engine;
+            public Func<string?> Extra = () => null;
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -117,7 +120,12 @@ namespace SensorProbe
         {
             var engine = o.NuitrackEngine == "config" ? null : o.NuitrackEngine;
             var s = new DanceLab.Capture.Nuitrack.NuitrackPoseSource(o.SensorId, engine) { UseColorSensor = !o.NoColorSensor };
-            return new Handle { Pose = s, Images = s, Version = () => s.Version, LastError = () => s.LastError, Engine = () => s.Engine };
+            foreach (var kv in o.NuitrackSet)
+            {
+                var i = kv.IndexOf((char)61);
+                s.ConfigOverrides[i < 0 ? kv : kv.Substring(0, i)] = i < 0 ? "?" : kv.Substring(i + 1);
+            }
+            return new Handle { Pose = s, Images = s, Version = () => s.Version, LastError = () => s.LastError, Engine = () => s.Engine, Extra = () => string.Join("; ", System.Linq.Enumerable.Select(s.ConfigResults, r => r.Key + "=" + r.Value)) };
         }
 
         private static int Run(Options o)
@@ -152,6 +160,12 @@ namespace SensorProbe
                 Console.WriteLine(result.Message);
                 Console.WriteLine("Кадров скелета: " + result.SkeletonFrames + ", глубины: " + result.DepthFrames + ", цвета: " + result.ColorFrames);
                 Console.WriteLine("Папка: " + options.RunDirectory);
+                var extra = h.Extra();
+                if (!string.IsNullOrEmpty(extra))
+                {
+                    Console.WriteLine("Конфиг Nuitrack: " + extra);
+                }
+
                 var err = h.LastError();
                 if (err != null)
                 {

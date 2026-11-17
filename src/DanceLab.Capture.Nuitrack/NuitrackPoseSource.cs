@@ -41,6 +41,12 @@ namespace DanceLab.Capture.Nuitrack
         /// <summary>false: не создавать цветовой датчик (только для скелета, диагностика частоты). Задаётся до Start.</summary>
         public bool UseColorSensor { get; set; } = true;
 
+        /// <summary>Дополнительные значения конфига Nuitrack (ключ и значение), применяются после выбора устройства. Для диагностики.</summary>
+        public System.Collections.Generic.IDictionary<string, string> ConfigOverrides { get; } = new System.Collections.Generic.Dictionary<string, string>();
+
+        /// <summary>Что вернул GetConfigValue для каждого переопределённого ключа (или текст ошибки).</summary>
+        public System.Collections.Generic.IDictionary<string, string> ConfigResults { get; } = new System.Collections.Generic.Dictionary<string, string>();
+
         public string TrackerId => Id;
 
         public SensorInfo Sensor { get; private set; }
@@ -129,6 +135,23 @@ namespace DanceLab.Capture.Nuitrack
             if (skeletonEngine != null)
             {
                 nuitrack.Nuitrack.SetConfigValue("Skeletonization.Type", skeletonEngine);
+            }
+
+            foreach (var kv in ConfigOverrides)
+            {
+                try
+                {
+                    if (kv.Value != "?")
+                    {
+                        nuitrack.Nuitrack.SetConfigValue(kv.Key, kv.Value);
+                    }
+
+                    ConfigResults[kv.Key] = nuitrack.Nuitrack.GetConfigValue(kv.Key);
+                }
+                catch (System.Exception ex)
+                {
+                    ConfigResults[kv.Key] = "ошибка: " + ex.Message;
+                }
             }
 
             Engine = nuitrack.Nuitrack.GetConfigValue("Skeletonization.Type");
