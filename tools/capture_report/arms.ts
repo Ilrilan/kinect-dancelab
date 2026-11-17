@@ -1,5 +1,5 @@
 // Анализ рук в записи skeleton.jsonl: как ведут себя плечо, локоть и кисть, когда рука направлена на сенсор.
-// Запуск: node tools/capture_report/arms.ts <путь к skeleton.jsonl>
+// Запуск: node tools/capture_report/arms.ts <путь к skeleton.jsonl> [--from секунды] [--to секунды]
 import { readFileSync } from 'node:fs';
 import { parse, type Frame, type Joint } from './report.ts';
 
@@ -146,7 +146,16 @@ function main(): void {
     console.error('Использование: node tools/capture_report/arms.ts <skeleton.jsonl>');
     process.exit(1);
   }
-  const { header, frames } = parse(readFileSync(path, 'utf8'));
+  const parsed = parse(readFileSync(path, 'utf8'));
+  const { header } = parsed;
+  const opt = (name: string): number | null => {
+    const i = process.argv.indexOf(name);
+    return i >= 0 && process.argv[i + 1] ? Number(process.argv[i + 1]) : null;
+  };
+  const from = opt('--from') ?? 0;
+  const to = opt('--to') ?? Infinity;
+  const t0 = parsed.frames[0].deviceTimeUs;
+  const frames = parsed.frames.filter((f) => (f.deviceTimeUs - t0) / 1e6 >= from && (f.deviceTimeUs - t0) / 1e6 < to);
   const id = header.tracker.id;
   console.log(`Трекер: ${id}, кадров: ${frames.length}`);
   for (const side of ['L', 'R'] as const) {
