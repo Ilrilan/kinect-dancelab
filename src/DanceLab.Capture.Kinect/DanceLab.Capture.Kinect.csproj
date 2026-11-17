@@ -3,12 +3,25 @@
     <TargetFramework>net48</TargetFramework>
     <RootNamespace>DanceLab.Capture.Kinect</RootNamespace>
     <KinectAssemblies Condition="'$(KinectAssemblies)' == ''">C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Assemblies</KinectAssemblies>
+    <KinectFace Condition="'$(KinectFace)' == ''">C:\Program Files\Microsoft SDKs\Kinect\v2.0_1409\Redist\Face\x64</KinectFace>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Microsoft.Kinect">
       <HintPath>$(KinectAssemblies)\Microsoft.Kinect.dll</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="Microsoft.Kinect.Face">
+      <HintPath>$(KinectFace)\Microsoft.Kinect.Face.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Content Include="$(KinectFace)\Kinect20.Face.dll">
+      <Link>Kinect20.Face.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(KinectFace)\NuiDatabase\**\*">
+      <Link>NuiDatabase\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <ProjectReference Include="..\DanceLab.Capture\DanceLab.Capture.csproj" />
   </ItemGroup>
 </Project>

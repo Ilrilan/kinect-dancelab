@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.Kinect;
+using Microsoft.Kinect.Face;
 
 namespace DanceLab.Capture.Kinect
 {
@@ -19,6 +20,15 @@ namespace DanceLab.Capture.Kinect
         private DepthFrameReader? depthReader;
         private ColorFrameReader? colorReader;
         private Body[]? bodies;
+        private FaceFrameSource? faceSource;
+        private FaceFrameReader? faceReader;
+        private readonly object faceSync = new object();
+        private bool faceTracked;
+        private double faceYawDeg;
+        private double facePitchDeg;
+        private string faceLookingAway = string.Empty;
+        private string faceEngaged = string.Empty;
+        private long faceAtTicks;
         private ushort[]? depthBuffer;
         private int opened;
         private bool intrinsicsSent;
@@ -37,6 +47,12 @@ namespace DanceLab.Capture.Kinect
                 new FrameSize(depth.Width, depth.Height, 30, "Depth16"),
                 new FrameSize(color.Width, color.Height, 30, "Yuy2"));
         }
+
+        /// <summary>
+        /// Включить определение лица (Kinect Face API): лицо находится, только когда обращено к сенсору, поэтому это признак «лицом» (S6 просмотрщика).
+        /// Результат попадает в Scene.Other каждого кадра: faceTracked, faceYawDeg, facePitchDeg, faceLookingAway, faceEngaged. Задаётся до Start.
+        /// </summary>
+        public bool EnableFace { get; set; }
 
         public string TrackerId => Id;
 
@@ -65,6 +81,15 @@ namespace DanceLab.Capture.Kinect
 
                 bodyReader = sensor.BodyFrameSource.OpenReader();
                 bodyReader.FrameArrived += OnBodyFrame;
+                if (EnableFace)
+                {
+                    faceSource = new FaceFrameSource(
+                        sensor,
+                        0,
+                        FaceFrameFeatures.BoundingBoxInColorSpace | FaceFrameFeatures.RotationOrientation | FaceFrameFeatures.FaceEngagement | FaceFrameFeatures.LookingAway);
+                    faceReader = faceSource.OpenReader();
+                    faceReader.FrameArrived += OnFaceFrame;
+                }
             }
         }
 
@@ -77,6 +102,19 @@ namespace DanceLab.Capture.Kinect
                     bodyReader.FrameArrived -= OnBodyFrame;
                     bodyReader.Dispose();
                     bodyReader = null;
+                }
+
+                if (faceReader != null)
+                {
+                    faceReader.FrameArrived -= OnFaceFrame;
+                    faceReader.Dispose();
+                    faceReader = null;
+                }
+
+                if (faceSource != null)
+                {
+                    faceSource.Dispose();
+                    faceSource = null;
                 }
             }
 
@@ -168,6 +206,41 @@ namespace DanceLab.Capture.Kinect
             }
         }
 
+        /// <summary>Поворот головы из кватерниона Kinect Face: yaw 0 означает взгляд на сенсор.</summary>
+        private static void QuaternionToPitchYaw(Microsoft.Kinect.Vector4 q, out double pitchDeg, out double yawDeg)
+        {
+            double x = q.X, y = q.Y, z = q.Z, w = q.W;
+            pitchDeg = Math.Atan2(2 * ((y * z) + (w * x)), (w * w) - (x * x) - (y * y) + (z * z)) * 180.0 / Math.PI;
+            yawDeg = Math.Asin(Math.Max(-1, Math.Min(1, 2 * ((w * y) - (x * z))))) * 180.0 / Math.PI;
+        }
+
+        private void OnFaceFrame(object? sender, FaceFrameArrivedEventArgs e)
+        {
+            using (var frame = e.FrameReference.AcquireFrame())
+            {
+                if (frame == null)
+                {
+                    return;
+                }
+
+                var r = frame.FaceFrameResult;
+                lock (faceSync)
+                {
+                    faceAtTicks = DateTime.UtcNow.Ticks;
+                    if (r == null)
+                    {
+                        faceTracked = false;
+                        return;
+                    }
+
+                    faceTracked = true;
+                    QuaternionToPitchYaw(r.FaceRotationQuaternion, out facePitchDeg, out faceYawDeg);
+                    faceLookingAway = r.FaceProperties.ContainsKey(FaceProperty.LookingAway) ? r.FaceProperties[FaceProperty.LookingAway].ToString() : string.Empty;
+                    faceEngaged = r.FaceProperties.ContainsKey(FaceProperty.Engaged) ? r.FaceProperties[FaceProperty.Engaged].ToString() : string.Empty;
+                }
+            }
+        }
+
         private void OnBodyFrame(object? sender, BodyFrameArrivedEventArgs e)
         {
             var handler = FrameReceived;
@@ -206,6 +279,10 @@ namespace DanceLab.Capture.Kinect
                     }
 
                     users.Add(new TrackedUser(unchecked((int)body.TrackingId), joints));
+                    if (faceSource != null && users.Count == 1 && (!faceSource.IsTrackingIdValid || faceSource.TrackingId != body.TrackingId))
+                    {
+                        faceSource.TrackingId = body.TrackingId;
+                    }
                 }
 
                 var plane = frame.FloorClipPlane;
@@ -225,6 +302,23 @@ namespace DanceLab.Capture.Kinect
                         { "depthRadialK4", (double)k.RadialDistortionFourthOrder },
                         { "depthRadialK6", (double)k.RadialDistortionSixthOrder },
                     };
+                }
+
+                if (faceSource != null)
+                {
+                    other ??= new Dictionary<string, object>();
+                    lock (faceSync)
+                    {
+                        var fresh = users.Count > 0 && faceTracked && (DateTime.UtcNow.Ticks - faceAtTicks) < TimeSpan.TicksPerSecond / 2;
+                        other["faceTracked"] = fresh;
+                        if (fresh)
+                        {
+                            other["faceYawDeg"] = faceYawDeg;
+                            other["facePitchDeg"] = facePitchDeg;
+                            other["faceLookingAway"] = faceLookingAway;
+                            other["faceEngaged"] = faceEngaged;
+                        }
+                    }
                 }
 
                 var scene = (floor == null && other == null) ? null : new SceneInfo(floor, other);

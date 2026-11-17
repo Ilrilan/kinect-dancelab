@@ -63,7 +63,7 @@ namespace SensorView
                 return new LiveSession(key, n, n, () => n.LastError, () => n.Version, () => n.Engine);
             }
 
-            var k = new KinectPoseSource("viewer");
+            var k = new KinectPoseSource("viewer") { EnableFace = true };
             return new LiveSession(key, k, k, () => null, () => k.Version, () => null);
         }
 

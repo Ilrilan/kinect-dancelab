@@ -45,6 +45,22 @@ namespace SensorView
         /// <summary>Рисовать полупрозрачный силуэт («призрак») под палочным скелетом.</summary>
         public bool ShowGhost { get; set; } = true;
 
+        private string? faceText;
+        private bool faceOk;
+
+        /// <summary>Метка «лицо найдено или нет» в правом верхнем углу (Kinect Face API), null убирает.</summary>
+        public void SetFace(string? text, bool ok)
+        {
+            if (faceText == text && faceOk == ok)
+            {
+                return;
+            }
+
+            faceText = text;
+            faceOk = ok;
+            InvalidateVisual();
+        }
+
         private string? overlay;
         private bool overlayRed;
 
@@ -106,6 +122,13 @@ namespace SensorView
             }
 
             scalePx = scale;
+            if (faceText != null)
+            {
+                var fb = new SolidColorBrush(faceOk ? Color.FromRgb(0x66, 0xbb, 0x6a) : Color.FromRgb(0xef, 0x53, 0x50));
+                var ft = new FormattedText(faceText, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), 15, fb, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+                dc.DrawText(ft, new Point(w - ft.Width - 10, 8));
+            }
+
             Text(dc, title, 8, 6, 13, LabelBrush);
             if (overlay != null)
             {

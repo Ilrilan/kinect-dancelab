@@ -662,6 +662,9 @@ namespace SensorView
 
             front.SetData(frame, s.TrackerId, lastFloor, lastHFov);
             top.SetData(frame, s.TrackerId, lastFloor, lastHFov);
+            var face = FaceText(frame, out var faceOk);
+            front.SetFace(face, faceOk);
+            top.SetFace(face, faceOk);
 
             if (tick % 3 == 0)
             {
@@ -679,6 +682,31 @@ namespace SensorView
                 await StopAsync();
                 status.Text = "Остановлено по таймеру (" + LimitMinutes().ToString("0.#", CultureInfo.InvariantCulture) + " мин).";
             }
+        }
+
+        /// <summary>Результат Kinect Face API из Scene.Other кадра: лицо найдено только когда оно обращено к сенсору.</summary>
+        private static string? FaceText(SkeletonFrame? frame, out bool ok)
+        {
+            ok = false;
+            if (frame == null || frame.Users.Count == 0)
+            {
+                return frame?.Scene?.Other != null && frame.Scene.Other.ContainsKey("faceTracked") ? "человека нет" : null;
+            }
+
+            var other = frame.Scene?.Other;
+            if (other == null || !other.TryGetValue("faceTracked", out var ft) || !(ft is bool tracked))
+            {
+                return null;
+            }
+
+            ok = tracked;
+            if (!tracked)
+            {
+                return "ЛИЦА НЕТ (спиной или боком)";
+            }
+
+            var yaw = other.TryGetValue("faceYawDeg", out var y) && y is double yd ? yd : 0;
+            return "ЛИЦО НАЙДЕНО, поворот головы " + yaw.ToString("0", CultureInfo.InvariantCulture) + " град";
         }
 
         private double[]? lastFloor;
@@ -722,6 +750,12 @@ namespace SensorView
                 }
 
                 return sb.ToString();
+            }
+
+            var faceLine = FaceText(frame, out _);
+            if (faceLine != null)
+            {
+                sb.AppendLine(faceLine);
             }
 
             sb.AppendLine("ЛЮДИ В КАДРЕ: " + frame.Users.Count);
