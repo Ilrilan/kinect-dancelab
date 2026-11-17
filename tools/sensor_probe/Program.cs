@@ -27,6 +27,7 @@ namespace SensorProbe
             public string Out = Path.Combine("data", "captures");
             public string NuitrackEngine = "CNN_HPE";
             public int Countdown = 3;
+            public bool NoColorSensor;
         }
 
         private static int Usage(string message)
@@ -66,6 +67,7 @@ namespace SensorProbe
                         case "--sensor-id": o.SensorId = Next(); break;
                         case "--out": o.Out = Next(); break;
                         case "--nuitrack-engine": o.NuitrackEngine = Next(); break;
+                        case "--no-color-sensor": o.NoColorSensor = true; break;
                         case "--countdown": o.Countdown = int.Parse(Next(), CultureInfo.InvariantCulture); break;
                         default: return Usage("Неизвестный аргумент: " + args[i]);
                     }
@@ -114,7 +116,7 @@ namespace SensorProbe
         private static Handle CreateNuitrack(Options o)
         {
             var engine = o.NuitrackEngine == "config" ? null : o.NuitrackEngine;
-            var s = new DanceLab.Capture.Nuitrack.NuitrackPoseSource(o.SensorId, engine);
+            var s = new DanceLab.Capture.Nuitrack.NuitrackPoseSource(o.SensorId, engine) { UseColorSensor = !o.NoColorSensor };
             return new Handle { Pose = s, Images = s, Version = () => s.Version, LastError = () => s.LastError, Engine = () => s.Engine };
         }
 

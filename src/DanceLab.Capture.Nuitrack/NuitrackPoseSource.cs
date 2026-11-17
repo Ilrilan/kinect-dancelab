@@ -38,6 +38,9 @@ namespace DanceLab.Capture.Nuitrack
             Sensor = new SensorInfo(sensorId, null, null, null);
         }
 
+        /// <summary>false: не создавать цветовой датчик (только для скелета, диагностика частоты). Задаётся до Start.</summary>
+        public bool UseColorSensor { get; set; } = true;
+
         public string TrackerId => Id;
 
         public SensorInfo Sensor { get; private set; }
@@ -131,14 +134,17 @@ namespace DanceLab.Capture.Nuitrack
             Engine = nuitrack.Nuitrack.GetConfigValue("Skeletonization.Type");
 
             depthSensor = DepthSensor.Create();
-            colorSensor = ColorSensor.Create();
+            colorSensor = UseColorSensor ? ColorSensor.Create() : null;
             skeletonTracker = SkeletonTracker.Create();
             depthSensor.OnUpdateEvent += OnDepth;
-            colorSensor.OnUpdateEvent += OnColor;
+            if (colorSensor != null)
+            {
+                colorSensor.OnUpdateEvent += OnColor;
+            }
             skeletonTracker.OnSkeletonUpdateEvent += OnSkeleton;
 
             var dm = depthSensor.GetOutputMode();
-            var cm = colorSensor.GetOutputMode();
+            var cm = colorSensor?.GetOutputMode();
             string? serial = null;
             try
             {
@@ -153,7 +159,7 @@ namespace DanceLab.Capture.Nuitrack
                 sensorId,
                 serial,
                 new FrameSize(dm.Size.Width, dm.Size.Height, dm.FPS, "Depth16"),
-                new FrameSize(cm.Size.Width, cm.Size.Height, cm.FPS, "Rgb24"));
+                cm == null ? null : new FrameSize(cm.Value.Size.Width, cm.Value.Size.Height, cm.Value.FPS, "Rgb24"));
             sceneOnce = new SceneInfo(null, new Dictionary<string, object>
             {
                 { "depthHFovRad", (double)dm.HFOV },
