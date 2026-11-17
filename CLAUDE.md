@@ -53,7 +53,7 @@ src/DanceLab.Capture (общая библиотека), src/DanceLab.Capture.Kin
 src/DanceLab.Capture.Nuitrack (реализации под трекеры), tools/sensor_probe
 (консоль и сценарий записей), tools/capture_report (сводка по записям, Node TS), tools/sensor_view (WPF, живой просмотр и воспроизведение записей),
 tests/DanceLab.Capture.Tests. Сборка: dotnet build DanceLab.sln, тесты: dotnet test
-tests/DanceLab.Capture.Tests. Скрипты на Node TS: npm run check (типы, линтер, prettier, тесты).
+tests/DanceLab.Capture.Tests и tests/DanceLab.Core.Tests (достройка суставов, src/DanceLab.Core). Скрипты на Node TS: npm run check (типы, линтер, prettier, тесты).
 Остального кода пока нет. Когда появится, раскладка следует Д4 (Studio и Player — разные
 приложения) и Д5 (одно WPF-приложение на C#, без вебвью):
 
