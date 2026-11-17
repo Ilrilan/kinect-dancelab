@@ -97,6 +97,9 @@ export interface Report {
   repeatability: { peaks: number; periodS: { mean: number; std: number }; peakHeightCm: { mean: number; std: number } } | null;
 }
 
+/** Трекер не нашёл сустав: Nuitrack отдаёт нули с уверенностью 0, такие точки в статистику не входят. */
+export const isMissing = (j: Joint): boolean => j.conf === 0 || (Math.abs(j.x) < 0.01 && Math.abs(j.y) < 0.01 && Math.abs(j.z) < 0.01);
+
 export function analyze(header: Header, frames: Frame[]): Report {
   const tracker = header.tracker.id;
   const dt: number[] = [];
@@ -109,6 +112,7 @@ export function analyze(header: Header, frames: Frame[]): Report {
   const byJoint = new Map<string, Joint[]>();
   for (const u of people)
     for (const j of u.joints) {
+      if (isMissing(j)) continue;
       const arr = byJoint.get(j.name) ?? [];
       arr.push(j);
       byJoint.set(j.name, arr);
@@ -124,7 +128,7 @@ export function analyze(header: Header, frames: Frame[]): Report {
     for (const u of people) {
       const ja = u.joints.find((j) => j.name === a);
       const jb = u.joints.find((j) => j.name === b);
-      if (ja && jb) lens.push(dist(ja, jb) * 100);
+      if (ja && jb && !isMissing(ja) && !isMissing(jb)) lens.push(dist(ja, jb) * 100);
     }
     if (lens.length) boneLengthCm[label] = { mean: mean(lens), std: std(lens) };
   }

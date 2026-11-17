@@ -106,3 +106,26 @@ test('нестатичный файл без людей не падает', () =
   assert.equal(r.framesWithUser, 0);
   assert.equal(r.repeatability, null);
 });
+
+test('суставы без обнаружения (нули) не входят в шум и длины костей', () => {
+  const header = { kind: 'header', formatVersion: 1, tracker: { id: 'nuitrack' }, sensor: { id: 's' }, scenario: 'x' };
+  const frame = (n: number) => ({
+    kind: 'frame',
+    n,
+    deviceTimeUs: n * 33333,
+    hostTimeUtcTicks: n * 333330,
+    users: [
+      {
+        id: 1,
+        joints: [
+          { name: 'LeftKnee', x: 0.1, y: -0.5, z: 1.7, conf: 0.5 },
+          { name: 'LeftAnkle', x: 0, y: 0, z: 0, conf: 0 },
+        ],
+      },
+    ],
+  });
+  const r = analyze(header as never, [frame(0), frame(1), frame(2)] as never);
+  assert.equal(r.jointNoiseCm.LeftAnkle, undefined);
+  assert.ok(r.jointNoiseCm.LeftKnee);
+  assert.equal(r.boneLengthCm['shin-L'], undefined);
+});
