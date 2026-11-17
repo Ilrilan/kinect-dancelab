@@ -230,11 +230,16 @@ namespace DanceLab.Capture.Kinect
                     if (r == null)
                     {
                         faceTracked = false;
+                        faceLookingAway = string.Empty;
+                        faceEngaged = string.Empty;
                         return;
                     }
 
-                    faceTracked = true;
-                    QuaternionToPitchYaw(r.FaceRotationQuaternion, out facePitchDeg, out faceYawDeg);
+                    // Face API отдаёт результат и когда лица нет (человек спиной): тогда кватернион пустой (yaw и pitch ровно 0, измерено 2026-11-17).
+                    // Лицо считается найденным только при ненулевом повороте.
+                    var q = r.FaceRotationQuaternion;
+                    faceTracked = Math.Abs(q.X) + Math.Abs(q.Y) + Math.Abs(q.Z) > 1e-6;
+                    QuaternionToPitchYaw(q, out facePitchDeg, out faceYawDeg);
                     faceLookingAway = r.FaceProperties.ContainsKey(FaceProperty.LookingAway) ? r.FaceProperties[FaceProperty.LookingAway].ToString() : string.Empty;
                     faceEngaged = r.FaceProperties.ContainsKey(FaceProperty.Engaged) ? r.FaceProperties[FaceProperty.Engaged].ToString() : string.Empty;
                 }
@@ -311,12 +316,12 @@ namespace DanceLab.Capture.Kinect
                     {
                         var fresh = users.Count > 0 && faceTracked && (DateTime.UtcNow.Ticks - faceAtTicks) < TimeSpan.TicksPerSecond / 2;
                         other["faceTracked"] = fresh;
+                        other["faceLookingAway"] = faceLookingAway;
+                        other["faceEngaged"] = faceEngaged;
                         if (fresh)
                         {
                             other["faceYawDeg"] = faceYawDeg;
                             other["facePitchDeg"] = facePitchDeg;
-                            other["faceLookingAway"] = faceLookingAway;
-                            other["faceEngaged"] = faceEngaged;
                         }
                     }
                 }
