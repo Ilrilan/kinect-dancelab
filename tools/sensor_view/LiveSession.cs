@@ -17,7 +17,7 @@ namespace SensorView
         private readonly Func<string> version;
         private readonly Func<string?> engine;
         private readonly Stopwatch clock = new Stopwatch();
-        private readonly PoseReconstructor reconstructor;
+        private readonly MultiUserReconstructor reconstructor;
         private SkeletonFrame? latest;
         private SkeletonFrame? latestReconstructed;
         private ImageFrame? latestDepth;
@@ -31,7 +31,7 @@ namespace SensorView
             this.lastError = lastError;
             this.version = version;
             this.engine = engine;
-            reconstructor = new PoseReconstructor(pose.TrackerId);
+            reconstructor = new MultiUserReconstructor(pose.TrackerId);
             pose.FrameReceived += OnSkeleton;
             images.DepthReceived += OnDepth;
         }
@@ -173,7 +173,7 @@ namespace SensorView
             SkeletonFrame? rebuilt = null;
             try
             {
-                rebuilt = Conversion.ToFrame(reconstructor.Process(f), f);
+                rebuilt = reconstructor.Process(f);
             }
             catch (System.Exception)
             {

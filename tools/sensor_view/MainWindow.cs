@@ -248,10 +248,10 @@ namespace SensorView
             replay = new System.Collections.Generic.List<SkeletonFrame>(reader.ReadFrames());
             replayFrom = fromSeconds;
             replayRecon = new System.Collections.Generic.List<SkeletonFrame>(replay.Count);
-            var rec = new PoseReconstructor(replayTracker);
+            var rec = new MultiUserReconstructor(replayTracker);
             foreach (var rf in replay)
             {
-                replayRecon.Add(Conversion.ToFrame(rec.Process(rf), rf));
+                replayRecon.Add(rec.Process(rf));
             }
 
             replayStart = DateTime.UtcNow;
