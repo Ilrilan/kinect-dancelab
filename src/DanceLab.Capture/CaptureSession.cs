@@ -148,13 +148,14 @@ namespace DanceLab.Capture
                     images.ColorReceived += recorder.AddColor;
                 }
 
-                Log("Запись " + o.DurationSeconds.ToString(CultureInfo.InvariantCulture) + " с...");
+                Log("=== СТАРТ === " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + ", запись " + o.DurationSeconds.ToString(CultureInfo.InvariantCulture) + " с");
                 var end = DateTime.UtcNow.AddSeconds(o.DurationSeconds);
                 while (DateTime.UtcNow < end)
                 {
                     Thread.Sleep(50);
                 }
 
+                Log("=== СТОП === " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture));
                 pose.FrameReceived -= writer.Write;
                 if (recorder != null)
                 {
