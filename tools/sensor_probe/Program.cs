@@ -128,6 +128,8 @@ namespace SensorProbe
             return new Handle { Pose = s, Images = s, Version = () => s.Version, LastError = () => s.LastError, Engine = () => s.Engine, Extra = () => string.Join("; ", System.Linq.Enumerable.Select(s.ConfigResults, r => r.Key + "=" + r.Value)) };
         }
 
+        private static volatile bool enterPressed;
+
         private static int Run(Options o)
         {
             Handle h;
@@ -154,7 +156,26 @@ namespace SensorProbe
                     VersionProvider = h.Version,
                     EngineProvider = h.Engine,
                     Log = Console.WriteLine,
+                    StopRequested = () => enterPressed,
                 };
+                if (!Console.IsInputRedirected)
+                {
+                    var reader = new System.Threading.Thread(() =>
+                    {
+                        try
+                        {
+                            Console.ReadLine();
+                            enterPressed = true;
+                        }
+                        catch (Exception)
+                        {
+                            // ввод недоступен, остановка по Enter отключена
+                        }
+                    })
+                    { IsBackground = true };
+                    reader.Start();
+                }
+
                 Console.WriteLine("Открываю сенсор через " + o.Tracker + "...");
                 var result = CaptureSession.Run(h.Pose, h.Images, options);
                 Console.WriteLine(result.Message);

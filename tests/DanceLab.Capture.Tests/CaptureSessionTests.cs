@@ -74,6 +74,46 @@ namespace DanceLab.Capture.Tests
         }
 
         [Fact]
+        public void StopRequestEndsRecordingEarlyAndKeepsFrames()
+        {
+            var src = new FakePoseSource(Sensor());
+            using var cts = new CancellationTokenSource();
+            var t = Pump(src, false, cts.Token);
+            var started = DateTime.UtcNow;
+            var o = Options(dir, false);
+            o.DurationSeconds = 30;
+            o.StopRequested = () => (DateTime.UtcNow - started).TotalSeconds > 1.0;
+            var r = CaptureSession.Run(src, src, o);
+            cts.Cancel();
+            t.Join();
+            Assert.Equal(CaptureExitCode.Ok, r.Code);
+            Assert.True((DateTime.UtcNow - started).TotalSeconds < 10);
+            Assert.InRange(r.SkeletonFrames, 10, 400);
+            using var reader = new SkeletonRecordReader(File.OpenRead(Path.Combine(dir, "skeleton.jsonl")));
+            Assert.Equal(r.SkeletonFrames, reader.ReadFrames().Count());
+        }
+
+        [Fact]
+        public void ProgressLinesReportRemainingTime()
+        {
+            var src = new FakePoseSource(Sensor());
+            using var cts = new CancellationTokenSource();
+            var t = Pump(src, false, cts.Token);
+            var lines = new System.Collections.Generic.List<string>();
+            var o = Options(dir, false);
+            o.DurationSeconds = 4.2;
+            o.ProgressIntervalSeconds = 1;
+            o.Log = lines.Add;
+            CaptureSession.Run(src, src, o);
+            cts.Cancel();
+            t.Join();
+            var progress = lines.Where(l => l.StartsWith("осталось ")).ToList();
+            Assert.InRange(progress.Count, 2, 3);
+            Assert.Equal("осталось 3 с до конца", progress[0]);
+            Assert.Equal("осталось 2 с до конца", progress[1]);
+        }
+
+        [Fact]
         public void ImageRunWritesDepthColorAndSkeleton()
         {
             var src = new FakePoseSource(Sensor());

@@ -42,6 +42,12 @@ namespace DanceLab.Capture
         public Func<long>? FreeMemoryProvider { get; set; }
 
         public Action<string>? Log { get; set; }
+
+        /// <summary>Опрашивается во время записи: true останавливает запись досрочно, записанное сохраняется.</summary>
+        public Func<bool>? StopRequested { get; set; }
+
+        /// <summary>Как часто в журнал выводится «осталось N с до конца», секунды; 0 отключает.</summary>
+        public double ProgressIntervalSeconds { get; set; } = 10;
     }
 
     public sealed class CaptureResult
@@ -148,10 +154,29 @@ namespace DanceLab.Capture
                     images.ColorReceived += recorder.AddColor;
                 }
 
-                Log("=== СТАРТ === " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + ", запись " + o.DurationSeconds.ToString(CultureInfo.InvariantCulture) + " с");
-                var end = DateTime.UtcNow.AddSeconds(o.DurationSeconds);
+                Log("=== СТАРТ === " + DateTime.Now.ToString("HH:mm:ss", CultureInfo.InvariantCulture) + ", запись " + o.DurationSeconds.ToString(CultureInfo.InvariantCulture) + " с (Enter: остановить раньше)");
+                var begin = DateTime.UtcNow;
+                var end = begin.AddSeconds(o.DurationSeconds);
+                var nextProgress = o.ProgressIntervalSeconds > 0 ? begin.AddSeconds(o.ProgressIntervalSeconds) : DateTime.MaxValue;
                 while (DateTime.UtcNow < end)
                 {
+                    if (o.StopRequested?.Invoke() == true)
+                    {
+                        Log("Запись остановлена досрочно по запросу.");
+                        break;
+                    }
+
+                    if (DateTime.UtcNow >= nextProgress)
+                    {
+                        var left = Math.Max(0, Math.Round((end - DateTime.UtcNow).TotalSeconds));
+                        if (left > 0)
+                        {
+                            Log("осталось " + left.ToString("0", CultureInfo.InvariantCulture) + " с до конца");
+                        }
+
+                        nextProgress = nextProgress.AddSeconds(o.ProgressIntervalSeconds);
+                    }
+
                     Thread.Sleep(50);
                 }
 
