@@ -90,15 +90,19 @@ namespace DanceLab.Core.Reconstruction
         /// <summary>Сколько кадров с полностью надёжной конечностью нужно, чтобы выучить длины костей.</summary>
         public int MinSamplesForBones { get; set; } = 30;
 
-        public static ReconstructionParameters ForKinect() => new ReconstructionParameters
-        {
-            JitterSecondDifferenceM = 0.015,
-        };
+        /// <summary>
+        /// Начальные значения Kinect SDK. Проверка дрожания (E74) выключена: на записи руки вперёд она ухудшала дрожание локтя
+        /// (построенный локоть наследует шум кисти), поэтому достраиваются только суставы с пометкой inferred и потерянные.
+        /// </summary>
+        public static ReconstructionParameters ForKinect() => new ReconstructionParameters();
 
+        /// <summary>
+        /// Начальные значения Nuitrack. Проверка длины кости (E78) выключена: при порогах 3 и 6 см она заменяла нормальные локти и ухудшала дрожание;
+        /// достраиваются только суставы с уверенностью ниже порога (E77) и потерянные.
+        /// </summary>
         public static ReconstructionParameters ForNuitrack() => new ReconstructionParameters
         {
             LowConfidence = 0.3,
-            BoneDeviationM = 0.03,
         };
     }
 

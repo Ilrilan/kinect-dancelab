@@ -244,7 +244,9 @@ namespace DanceLab.Core.Tests
         [Fact]
         public void NuitrackBoneLengthDeviationMakesElbowUnreliable()
         {
-            var r = new PoseReconstructor("nuitrack");
+            var parameters = ReconstructionParameters.ForNuitrack();
+            parameters.BoneDeviationM = 0.03;
+            var r = new PoseReconstructor("nuitrack", parameters);
             for (var i = 0; i < 60; i++)
             {
                 var (s, e, w) = Synth.Arm(i);
