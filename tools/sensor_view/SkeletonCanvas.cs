@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
@@ -38,6 +39,11 @@ namespace SensorView
             this.title = title;
             ClipToBounds = true;
         }
+
+        private double scalePx = 1;
+
+        /// <summary>Рисовать полупрозрачный силуэт («призрак») под палочным скелетом.</summary>
+        public bool ShowGhost { get; set; } = true;
 
         private string? overlay;
         private bool overlayRed;
@@ -81,6 +87,7 @@ namespace SensorView
             var sign = Topology.ScreenXSign(trackerId);
             Func<double, double, Point> map;
             double scale;
+
             if (kind == ViewKind.Front)
             {
                 scale = h / 3.0;
@@ -98,6 +105,7 @@ namespace SensorView
                 DrawTopGrid(dc, w, h, cx, scale);
             }
 
+            scalePx = scale;
             Text(dc, title, 8, 6, 13, LabelBrush);
             if (overlay != null)
             {
@@ -163,6 +171,11 @@ namespace SensorView
 
         private void DrawUser(DrawingContext dc, TrackedUser user, Func<double, double, Point> map, double w, double h)
         {
+            if (ShowGhost)
+            {
+                DrawGhost(dc, user, map);
+            }
+
             var useZ = kind == ViewKind.Top;
             Point? Pos(RawJoint? j)
             {
@@ -262,6 +275,122 @@ namespace SensorView
             }
 
             return 0;
+        }
+
+        private static readonly Color GhostColor = Color.FromRgb(0x7f, 0xd3, 0xff);
+
+        private static double Dist(RawJoint a, RawJoint b) => Math.Sqrt(((a.X - b.X) * (a.X - b.X)) + ((a.Y - b.Y) * (a.Y - b.Y)) + ((a.Z - b.Z) * (a.Z - b.Z)));
+
+        /// <summary>Радиус капсулы кости в метрах по имени конечного сустава и длине кости (пропорции по самой кости, не по нормативу).</summary>
+        private static double LimbRadius(string endJoint, double boneLength)
+        {
+            if (endJoint.Contains("Elbow") || endJoint.Contains("Knee"))
+            {
+                return 0.17 * boneLength;
+            }
+
+            if (endJoint.Contains("Wrist"))
+            {
+                return 0.14 * boneLength;
+            }
+
+            if (endJoint.Contains("Ankle"))
+            {
+                return 0.12 * boneLength;
+            }
+
+            if (endJoint == "Hand" || endJoint.EndsWith("Hand", StringComparison.Ordinal))
+            {
+                return 0.045;
+            }
+
+            if (endJoint.Contains("Foot"))
+            {
+                return 0.04;
+            }
+
+            return endJoint == "Neck" ? 0.045 : 0;
+        }
+
+        /// <summary>Полупрозрачное тело из капсул по костям, туловище по плечам и бёдрам, голова кругом. Рисуется одним слоем с общей прозрачностью, наложения капсул не темнеют.</summary>
+        private void DrawGhost(DrawingContext dc, TrackedUser user, Func<double, double, Point> map)
+        {
+            var byName = new Dictionary<string, RawJoint>();
+            foreach (var j in user.Joints)
+            {
+                if (!IsMissing(j))
+                {
+                    byName[j.Name] = j;
+                }
+            }
+
+            var top = kind == ViewKind.Top;
+            Point P(RawJoint j) => map(j.X, top ? j.Z : j.Y);
+            var nui = trackerId == Topology.Nuitrack;
+            var brush = new SolidColorBrush(GhostColor);
+            byName.TryGetValue(Topology.LeftShoulder(trackerId), out var ls);
+            byName.TryGetValue(Topology.RightShoulder(trackerId), out var rs);
+            byName.TryGetValue(nui ? "LeftHip" : "HipLeft", out var lh);
+            byName.TryGetValue(nui ? "RightHip" : "HipRight", out var rh);
+            var shoulderWidth = ls != null && rs != null ? Dist(ls, rs) : 0.35;
+
+            dc.PushOpacity(0.4);
+            if (top)
+            {
+                if (ls != null && rs != null)
+                {
+                    var a = P(ls);
+                    var b = P(rs);
+                    var center = new Point((a.X + b.X) / 2, (a.Y + b.Y) / 2);
+                    var angle = Math.Atan2(a.Y - b.Y, a.X - b.X) * 180 / Math.PI;
+                    dc.PushTransform(new RotateTransform(angle, center.X, center.Y));
+                    dc.DrawEllipse(brush, null, center, ((shoulderWidth / 2) + 0.05) * scalePx, 0.12 * scalePx);
+                    dc.Pop();
+                }
+            }
+            else
+            {
+                foreach (var bone in Topology.Bones(trackerId))
+                {
+                    if (!byName.TryGetValue(bone[0], out var ja) || !byName.TryGetValue(bone[1], out var jb))
+                    {
+                        continue;
+                    }
+
+                    var r = LimbRadius(bone[1], Dist(ja, jb));
+                    if (r <= 0)
+                    {
+                        continue;
+                    }
+
+                    var pen = new Pen(brush, 2 * r * scalePx) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+                    dc.DrawLine(pen, P(ja), P(jb));
+                }
+
+                if (ls != null && rs != null && lh != null && rh != null)
+                {
+                    var g = new StreamGeometry();
+                    using (var ctx = g.Open())
+                    {
+                        ctx.BeginFigure(P(ls), true, true);
+                        ctx.LineTo(P(rs), true, false);
+                        ctx.LineTo(P(rh), true, false);
+                        ctx.LineTo(P(lh), true, false);
+                    }
+
+                    g.Freeze();
+                    dc.DrawGeometry(brush, new Pen(brush, 0.12 * scalePx) { LineJoin = PenLineJoin.Round }, g);
+                }
+
+                if (byName.TryGetValue("Head", out var head))
+                {
+                    var c = P(head);
+                    var rr = 0.28 * shoulderWidth * scalePx;
+                    dc.DrawEllipse(brush, null, c, rr, rr * 1.15);
+                }
+            }
+
+            dc.Pop();
         }
 
         private static Color SideColor(Side side) => side == Side.Left ? LeftColor : side == Side.Right ? RightColor : CenterColor;

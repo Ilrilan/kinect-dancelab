@@ -19,6 +19,7 @@ namespace SensorView
         private readonly ComboBox trackerBox = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 8, 0) };
         private readonly Button startButton = new Button { Content = "Старт", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
         private readonly CheckBox depthBox = new CheckBox { Content = "Глубина", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+        private readonly CheckBox ghostBox = new CheckBox { Content = "Призрак", IsChecked = true, Foreground = Text, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBox limitBox = new TextBox { Text = "3", Width = 36, Margin = new Thickness(6, 0, 12, 0) };
         private readonly TextBox recSecondsBox = new TextBox { Text = "30", Width = 40 };
         private readonly TextBox recNameBox = new TextBox { Text = "viewer", Width = 130 };
@@ -63,6 +64,10 @@ namespace SensorView
             bar.Children.Add(trackerBox);
             bar.Children.Add(startButton);
             bar.Children.Add(depthBox);
+            ghostBox.Margin = new Thickness(0, 0, 12, 0);
+            ghostBox.Checked += (s, e) => SetGhost(true);
+            ghostBox.Unchecked += (s, e) => SetGhost(false);
+            bar.Children.Add(ghostBox);
             bar.Children.Add(new TextBlock { Text = "Автостоп, мин:", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
             bar.Children.Add(limitBox);
             bar.Children.Add(new TextBlock { Text = "Запись, с:", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
@@ -413,6 +418,14 @@ namespace SensorView
                 top.SetOverlay("Enter: остановить", true);
                 status.Text = text + " (" + (s.Recorder?.FramesWritten ?? 0) + " кадров), Enter: остановить раньше.";
             }
+        }
+
+        private void SetGhost(bool on)
+        {
+            front.ShowGhost = on;
+            top.ShowGhost = on;
+            front.InvalidateVisual();
+            top.InvalidateVisual();
         }
 
         private string SelectedKey => trackerBox.SelectedIndex == 1 ? "nuitrack" : "kinect";
