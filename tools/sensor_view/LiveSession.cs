@@ -3,6 +3,7 @@ using System.Diagnostics;
 using DanceLab.Capture;
 using DanceLab.Capture.Kinect;
 using DanceLab.Capture.Nuitrack;
+using DanceLab.Core.Reconstruction;
 
 namespace SensorView
 {
@@ -16,7 +17,9 @@ namespace SensorView
         private readonly Func<string> version;
         private readonly Func<string?> engine;
         private readonly Stopwatch clock = new Stopwatch();
+        private readonly PoseReconstructor reconstructor;
         private SkeletonFrame? latest;
+        private SkeletonFrame? latestReconstructed;
         private ImageFrame? latestDepth;
         private bool imagesOn;
 
@@ -28,6 +31,7 @@ namespace SensorView
             this.lastError = lastError;
             this.version = version;
             this.engine = engine;
+            reconstructor = new PoseReconstructor(pose.TrackerId);
             pose.FrameReceived += OnSkeleton;
             images.DepthReceived += OnDepth;
         }
@@ -52,9 +56,10 @@ namespace SensorView
 
         public static LiveSession Create(string key)
         {
-            if (key == "nuitrack")
+            if (key == "nuitrack-ai" || key == "nuitrack-native")
             {
-                var n = new NuitrackPoseSource("viewer", "CNN_HPE") { UseColorSensor = false };
+                // нативный режим оставляет Skeletonization.Type из конфига Nuitrack (классический трекер), AI ставит CNN_HPE
+                var n = new NuitrackPoseSource("viewer", key == "nuitrack-ai" ? "CNN_HPE" : null) { UseColorSensor = false };
                 return new LiveSession(key, n, n, () => n.LastError, () => n.Version, () => n.Engine);
             }
 
@@ -86,6 +91,9 @@ namespace SensorView
             }
         }
 
+        /// <summary>true: Latest отдаёт достроенную позу (specs/core/pose-reconstruction.md), false: сырую от трекера.</summary>
+        public volatile bool UseReconstruction = true;
+
         public LiveRecorder? Recorder { get; private set; }
 
         /// <summary>Начинает запись скелета в папку, источник продолжает работать.</summary>
@@ -116,7 +124,7 @@ namespace SensorView
             {
                 lock (sync)
                 {
-                    return latest;
+                    return UseReconstruction ? latestReconstructed ?? latest : latest;
                 }
             }
         }
@@ -162,9 +170,20 @@ namespace SensorView
 
         private void OnSkeleton(SkeletonFrame f)
         {
+            SkeletonFrame? rebuilt = null;
+            try
+            {
+                rebuilt = Conversion.ToFrame(reconstructor.Process(f), f);
+            }
+            catch (System.Exception)
+            {
+                reconstructor.Reset();
+            }
+
             lock (sync)
             {
                 latest = f;
+                latestReconstructed = rebuilt;
                 Skeleton.Add(f.DeviceTimeUs);
             }
         }

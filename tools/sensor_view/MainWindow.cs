@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using DanceLab.Capture;
+using DanceLab.Core.Reconstruction;
 
 namespace SensorView
 {
@@ -19,6 +20,7 @@ namespace SensorView
         private readonly ComboBox trackerBox = new ComboBox { Width = 150, Margin = new Thickness(0, 0, 8, 0) };
         private readonly Button startButton = new Button { Content = "Старт", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
         private readonly CheckBox depthBox = new CheckBox { Content = "Глубина", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
+        private readonly CheckBox reconBox = new CheckBox { Content = "Достройка", IsChecked = true, Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         private readonly CheckBox ghostBox = new CheckBox { Content = "Призрак", IsChecked = true, Foreground = Text, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBox limitBox = new TextBox { Text = "3", Width = 36, Margin = new Thickness(6, 0, 12, 0) };
         private readonly TextBox recSecondsBox = new TextBox { Text = "30", Width = 40 };
@@ -46,6 +48,7 @@ namespace SensorView
             Background = new SolidColorBrush(Color.FromRgb(0x10, 0x11, 0x14));
 
             trackerBox.Items.Add("Kinect SDK 2.0");
+            trackerBox.Items.Add("Nuitrack нативный");
             trackerBox.Items.Add("Nuitrack AI");
             trackerBox.SelectedIndex = 0;
             trackerBox.SelectionChanged += async (s, e) => await OnTrackerChanged();
@@ -64,6 +67,9 @@ namespace SensorView
             bar.Children.Add(trackerBox);
             bar.Children.Add(startButton);
             bar.Children.Add(depthBox);
+            reconBox.Checked += (s, e) => SetRecon(true);
+            reconBox.Unchecked += (s, e) => SetRecon(false);
+            bar.Children.Add(reconBox);
             ghostBox.Margin = new Thickness(0, 0, 12, 0);
             ghostBox.Checked += (s, e) => SetGhost(true);
             ghostBox.Unchecked += (s, e) => SetGhost(false);
@@ -146,7 +152,7 @@ namespace SensorView
                 return;
             }
 
-            trackerBox.SelectedIndex = tracker == "nuitrack" ? 1 : 0;
+            trackerBox.SelectedIndex = IndexOfTracker(tracker);
             if (Array.IndexOf(args, "--depth") >= 0)
             {
                 depthBox.IsChecked = true;
@@ -180,7 +186,7 @@ namespace SensorView
             {
                 await Task.Delay(5000);
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                var target = switchTo == "nuitrack" ? 1 : 0;
+                var target = IndexOfTracker(switchTo);
                 var before = session;
                 trackerBox.SelectedIndex = target;
                 while (busy || session == before || session == null)
@@ -229,6 +235,7 @@ namespace SensorView
         }
 
         private System.Collections.Generic.List<SkeletonFrame>? replay;
+        private System.Collections.Generic.List<SkeletonFrame>? replayRecon;
         private string replayTracker = Topology.Kinect;
         private DateTime replayStart;
         private double replayFrom;
@@ -240,6 +247,13 @@ namespace SensorView
             replayTracker = reader.Header.TrackerId;
             replay = new System.Collections.Generic.List<SkeletonFrame>(reader.ReadFrames());
             replayFrom = fromSeconds;
+            replayRecon = new System.Collections.Generic.List<SkeletonFrame>(replay.Count);
+            var rec = new PoseReconstructor(replayTracker);
+            foreach (var rf in replay)
+            {
+                replayRecon.Add(Conversion.ToFrame(rec.Process(rf), rf));
+            }
+
             replayStart = DateTime.UtcNow;
             replayName = System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(path) ?? path) + " (" + reader.Header.Scenario + ")";
             startButton.IsEnabled = false;
@@ -264,7 +278,7 @@ namespace SensorView
                 idx++;
             }
 
-            var f = replay[idx];
+            var f = reconOn && replayRecon != null ? replayRecon[idx] : replay[idx];
             double[]? floor = f.Scene?.FloorPlane;
             if (floor != null)
             {
@@ -420,6 +434,18 @@ namespace SensorView
             }
         }
 
+        private bool reconOn = true;
+
+        private void SetRecon(bool on)
+        {
+            reconOn = on;
+            var s = session;
+            if (s != null)
+            {
+                s.UseReconstruction = on;
+            }
+        }
+
         private void SetGhost(bool on)
         {
             front.ShowGhost = on;
@@ -428,7 +454,10 @@ namespace SensorView
             top.InvalidateVisual();
         }
 
-        private string SelectedKey => trackerBox.SelectedIndex == 1 ? "nuitrack" : "kinect";
+        private string SelectedKey => trackerBox.SelectedIndex == 2 ? "nuitrack-ai" : trackerBox.SelectedIndex == 1 ? "nuitrack-native" : "kinect";
+
+        /// <summary>Значения параметров --tracker и --switch-to: kinect, nuitrack-native, nuitrack-ai (nuitrack то же, что nuitrack-ai).</summary>
+        private static int IndexOfTracker(string name) => name == "nuitrack-native" ? 1 : name == "nuitrack" || name == "nuitrack-ai" ? 2 : 0;
 
         private async Task OnStartStop()
         {
@@ -467,7 +496,7 @@ namespace SensorView
             var key = SelectedKey;
             lastFloor = null;
             lastHFov = null;
-            status.Text = key == "nuitrack" ? "Запускаю Nuitrack (загрузка нейросети, несколько секунд)..." : "Запускаю Kinect SDK...";
+            status.Text = key == "nuitrack-ai" ? "Запускаю Nuitrack AI (загрузка нейросети, несколько секунд)..." : key == "nuitrack-native" ? "Запускаю Nuitrack нативный..." : "Запускаю Kinect SDK...";
             var withDepth = depthBox.IsChecked == true;
             LiveSession? created = null;
             string? error = null;
@@ -476,6 +505,7 @@ namespace SensorView
                 try
                 {
                     created = LiveSession.Create(key);
+                    created.UseReconstruction = reconOn;
                     created.Start();
                     created.SetDepth(withDepth);
                 }
@@ -606,6 +636,11 @@ namespace SensorView
             }
 
             tick++;
+            if (s.Elapsed.TotalSeconds > 8 && s.Snapshot().Total == 0 && !busy && recState == RecState.Idle)
+            {
+                status.Text = "Кадров от трекера нет уже " + ((int)s.Elapsed.TotalSeconds) + " с: сенсор мог остаться занят предыдущей программой или процессом. Нажмите Стоп, подождите несколько секунд и запустите снова.";
+            }
+
             OnRecordTick(s);
             var frame = s.Latest;
             double[]? floor = frame?.Scene?.FloorPlane;
@@ -725,7 +760,7 @@ namespace SensorView
         private static void AppendUser(StringBuilder sb, string trackerId, TrackedUser u, double[]? floor)
         {
             var inv = CultureInfo.InvariantCulture;
-            int tracked = 0, inferred = 0, missing = 0;
+            int tracked = 0, inferred = 0, missing = 0, rebuilt = 0;
             double confSum = 0;
             int confN = 0;
             RawJoint? ls = null, rs = null, root = null, head = null;
@@ -735,6 +770,10 @@ namespace SensorView
                 if (gone)
                 {
                     missing++;
+                }
+                else if (j.State == "reconstructed" || j.State == "extrapolated")
+                {
+                    rebuilt++;
                 }
                 else if (j.State == "inferred")
                 {
@@ -769,7 +808,7 @@ namespace SensorView
                 }
             }
 
-            sb.AppendLine("  id " + u.Id + ", суставов: " + tracked + " надёжных, " + inferred + " достроено, " + missing + " нет");
+            sb.AppendLine("  id " + u.Id + ", суставов: " + tracked + " надёжных, " + inferred + " достроено трекером, " + rebuilt + " достроено нами, " + missing + " нет");
             if (confN > 0)
             {
                 sb.AppendLine("  уверенность в среднем: " + (confSum / confN).ToString("0.00", inv));

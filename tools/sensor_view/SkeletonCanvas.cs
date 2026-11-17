@@ -232,8 +232,14 @@ namespace SensorView
                     continue;
                 }
 
-                var brush = new SolidColorBrush(SideColor(Topology.SideOf(j.Name)));
-                if (IsWeak(j))
+                var rebuilt = IsRebuilt(j);
+                var brush = new SolidColorBrush(rebuilt ? Colors.Gold : SideColor(Topology.SideOf(j.Name)));
+                if (rebuilt)
+                {
+                    dc.DrawEllipse(null, new Pen(brush, 2.5), p.Value, 6, 6);
+                    dc.DrawEllipse(brush, null, p.Value, 2, 2);
+                }
+                else if (IsWeak(j))
                 {
                     dc.DrawEllipse(null, new Pen(brush, 1.5), p.Value, 4, 4);
                 }
@@ -399,7 +405,9 @@ namespace SensorView
         private static bool IsMissing(RawJoint j) =>
             j.State == "not-tracked" || j.Conf == 0 || (Math.Abs(j.X) < 0.01 && Math.Abs(j.Y) < 0.01 && Math.Abs(j.Z) < 0.01);
 
-        private static bool IsWeak(RawJoint j) => j.State == "inferred" || (j.Conf.HasValue && j.Conf.Value < 0.3);
+        private static bool IsRebuilt(RawJoint j) => j.State == "reconstructed" || j.State == "extrapolated";
+
+        private static bool IsWeak(RawJoint j) => j.State == "inferred" || IsRebuilt(j) || (j.Conf.HasValue && j.Conf.Value < 0.3);
 
         private void Text(DrawingContext dc, string text, double x, double y, double size, Brush brush)
         {

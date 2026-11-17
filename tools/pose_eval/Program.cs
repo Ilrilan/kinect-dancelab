@@ -64,7 +64,6 @@ namespace PoseEval
                 {
                     var pose = reconstructor.Process(frame);
                     frames++;
-                    var joints = new List<RawJoint>(pose.Joints.Count);
                     foreach (var j in pose.Joints)
                     {
                         if (!counts.TryGetValue(j.Name, out var c))
@@ -74,25 +73,9 @@ namespace PoseEval
                         }
 
                         c[(int)j.Origin]++;
-                        switch (j.Origin)
-                        {
-                            case JointOrigin.Measured:
-                                joints.Add(new RawJoint(j.Name, j.X, j.Y, j.Z, j.Confidence, "tracked"));
-                                break;
-                            case JointOrigin.Reconstructed:
-                                joints.Add(new RawJoint(j.Name, j.X, j.Y, j.Z, j.Confidence, "reconstructed"));
-                                break;
-                            case JointOrigin.Extrapolated:
-                                joints.Add(new RawJoint(j.Name, j.X, j.Y, j.Z, j.Confidence, "extrapolated"));
-                                break;
-                            default:
-                                joints.Add(new RawJoint(j.Name, 0, 0, 0, 0, "not-tracked"));
-                                break;
-                        }
                     }
 
-                    var users = pose.Joints.Count == 0 ? new List<TrackedUser>() : new List<TrackedUser> { new TrackedUser(frame.Users[0].Id, joints) };
-                    writer.Write(new SkeletonFrame(frame.DeviceTimeUs, frame.HostTimeUtcTicks, users, frame.Scene));
+                    writer.Write(Conversion.ToFrame(pose, frame));
                 }
 
                 writer.Complete();

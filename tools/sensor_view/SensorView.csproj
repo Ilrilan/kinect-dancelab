@@ -10,5 +10,6 @@
     <ProjectReference Include="..\..\src\DanceLab.Capture\DanceLab.Capture.csproj" />
     <ProjectReference Include="..\..\src\DanceLab.Capture.Kinect\DanceLab.Capture.Kinect.csproj" />
     <ProjectReference Include="..\..\src\DanceLab.Capture.Nuitrack\DanceLab.Capture.Nuitrack.csproj" />
+    <ProjectReference Include="..\..\src\DanceLab.Core\DanceLab.Core.csproj" />
   </ItemGroup>
 </Project>
