@@ -86,6 +86,28 @@ namespace SensorView
             }
         }
 
+        public LiveRecorder? Recorder { get; private set; }
+
+        /// <summary>Начинает запись скелета в папку, источник продолжает работать.</summary>
+        public void StartRecording(string directory, string scenario)
+        {
+            Recorder = LiveRecorder.Start(pose, directory, scenario, Version, Engine);
+        }
+
+        /// <summary>Заканчивает запись, возвращает файл и число кадров.</summary>
+        public (string Path, int Frames)? StopRecording()
+        {
+            var r = Recorder;
+            Recorder = null;
+            if (r == null)
+            {
+                return null;
+            }
+
+            var frames = r.Stop();
+            return (r.Path, frames);
+        }
+
         public bool IsAvailable => pose.IsAvailable;
 
         public SkeletonFrame? Latest
@@ -112,6 +134,15 @@ namespace SensorView
 
         public void Dispose()
         {
+            try
+            {
+                Recorder?.Dispose();
+            }
+            finally
+            {
+                Recorder = null;
+            }
+
             pose.FrameReceived -= OnSkeleton;
             images.DepthReceived -= OnDepth;
             try

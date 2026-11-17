@@ -20,6 +20,9 @@ namespace SensorView
         private readonly Button startButton = new Button { Content = "Старт", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
         private readonly CheckBox depthBox = new CheckBox { Content = "Глубина", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) };
         private readonly TextBox limitBox = new TextBox { Text = "3", Width = 36, Margin = new Thickness(6, 0, 12, 0) };
+        private readonly TextBox recSecondsBox = new TextBox { Text = "30", Width = 40 };
+        private readonly TextBox recNameBox = new TextBox { Text = "viewer", Width = 130 };
+        private readonly Button recButton = new Button { Content = "Старт записи", Width = 140 };
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center };
         private readonly TextBlock stats = new TextBlock { Foreground = Text, FontFamily = new FontFamily("Consolas"), FontSize = 13, Margin = new Thickness(10), TextWrapping = TextWrapping.Wrap };
         private readonly Image depthImage = new Image { Stretch = Stretch.Uniform, Margin = new Thickness(10) };
@@ -62,6 +65,23 @@ namespace SensorView
             bar.Children.Add(depthBox);
             bar.Children.Add(new TextBlock { Text = "Автостоп, мин:", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
             bar.Children.Add(limitBox);
+            bar.Children.Add(new TextBlock { Text = "Запись, с:", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 0, 0, 0) });
+            recSecondsBox.Margin = new Thickness(6, 8, 0, 8);
+            bar.Children.Add(recSecondsBox);
+            bar.Children.Add(new TextBlock { Text = "название:", Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) });
+            recNameBox.Margin = new Thickness(6, 8, 0, 8);
+            bar.Children.Add(recNameBox);
+            recButton.Margin = new Thickness(10, 8, 0, 8);
+            bar.Children.Add(recButton);
+            recButton.Click += (s, e) => OnRecordButton();
+            PreviewKeyDown += (s, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Enter && recState != RecState.Idle)
+                {
+                    e.Handled = true;
+                    StopRecordingNow("остановлена по Enter");
+                }
+            };
             bar.Children.Add(status);
 
             var right = new DockPanel { Background = Panel };
@@ -140,6 +160,14 @@ namespace SensorView
             if (startLog != null)
             {
                 System.IO.File.WriteAllText(startLog, tracker + ": сеанс создан за " + created.ToString("0.0", CultureInfo.InvariantCulture) + " с, первый кадр скелета через " + startWatch.Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " с" + Environment.NewLine);
+            }
+
+            var autoRecord = Opt("--auto-record");
+            if (autoRecord != null)
+            {
+                recSecondsBox.Text = autoRecord;
+                recNameBox.Text = Opt("--record-name") ?? "autotest";
+                OnRecordButton();
             }
 
             var switchTo = Opt("--switch-to");
@@ -255,6 +283,135 @@ namespace SensorView
                 }
 
                 stats.Text = sb.ToString();
+            }
+        }
+
+        private enum RecState
+        {
+            Idle,
+            Countdown,
+            Recording,
+        }
+
+        private const double RecCountdownSeconds = 5;
+        private RecState recState = RecState.Idle;
+        private DateTime recPhaseStart;
+        private double recSeconds = 30;
+        private string recScenario = "viewer";
+
+        private static string RepoRoot()
+        {
+            var dir = new System.IO.DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            while (dir != null && !System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, "DanceLab.sln")))
+            {
+                dir = dir.Parent;
+            }
+
+            return dir?.FullName ?? Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        }
+
+        private void OnRecordButton()
+        {
+            if (recState != RecState.Idle)
+            {
+                StopRecordingNow("остановлена кнопкой");
+                return;
+            }
+
+            if (session == null || busy)
+            {
+                status.Text = "Сначала запустите просмотр (Старт), затем запись.";
+                return;
+            }
+
+            recSeconds = double.TryParse(recSecondsBox.Text.Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) && v >= 1 ? v : 30;
+            var raw = string.IsNullOrWhiteSpace(recNameBox.Text) ? "viewer" : recNameBox.Text.Trim();
+            var bad = System.IO.Path.GetInvalidFileNameChars();
+            recScenario = new string(Array.ConvertAll(raw.ToCharArray(), c => Array.IndexOf(bad, c) >= 0 || c == ' ' ? '-' : c));
+            recState = RecState.Countdown;
+            recPhaseStart = DateTime.UtcNow;
+            recButton.Content = "Отмена (Enter)";
+            recSecondsBox.IsEnabled = false;
+            recNameBox.IsEnabled = false;
+        }
+
+        private void StopRecordingNow(string reason)
+        {
+            var was = recState;
+            recState = RecState.Idle;
+            recButton.Content = "Старт записи";
+            recSecondsBox.IsEnabled = true;
+            recNameBox.IsEnabled = true;
+            front.SetOverlay(null, false);
+            top.SetOverlay(null, false);
+            if (was == RecState.Countdown)
+            {
+                status.Text = "Запись отменена до начала.";
+                return;
+            }
+
+            if (was != RecState.Recording)
+            {
+                return;
+            }
+
+            try
+            {
+                var r = session?.StopRecording();
+                status.Text = r == null ? "Запись остановлена." : "Запись " + reason + ": " + r.Value.Frames + " кадров, папка " + System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(r.Value.Path) ?? r.Value.Path);
+            }
+            catch (Exception ex)
+            {
+                status.Text = "Ошибка при сохранении записи: " + ex.Message;
+            }
+        }
+
+        private void OnRecordTick(LiveSession s)
+        {
+            if (recState == RecState.Countdown)
+            {
+                var left = RecCountdownSeconds - (DateTime.UtcNow - recPhaseStart).TotalSeconds;
+                if (left > 0)
+                {
+                    var n = Math.Ceiling(left).ToString("0", CultureInfo.InvariantCulture);
+                    front.SetOverlay("Запись через " + n, false);
+                    top.SetOverlay("Отойдите от сенсора", false);
+                    status.Text = "Запись начнётся через " + n + " с, Enter: отмена.";
+                    return;
+                }
+
+                try
+                {
+                    var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                    var dir = System.IO.Path.Combine(RepoRoot(), "data", "captures", stamp + "_" + s.Key + "_" + recScenario);
+                    s.StartRecording(dir, recScenario);
+                    recState = RecState.Recording;
+                    recPhaseStart = DateTime.UtcNow;
+                    recButton.Content = "Стоп записи (Enter)";
+                }
+                catch (Exception ex)
+                {
+                    StopRecordingNow("не началась");
+                    status.Text = "Не удалось начать запись: " + ex.Message;
+                }
+
+                return;
+            }
+
+            if (recState == RecState.Recording)
+            {
+                var elapsed = (DateTime.UtcNow - recPhaseStart).TotalSeconds;
+                var left = recSeconds - elapsed;
+                if (left <= 0)
+                {
+                    StopRecordingNow("завершена");
+                    return;
+                }
+
+                var text = "● ЗАПИСЬ, осталось " + Math.Ceiling(left).ToString("0", CultureInfo.InvariantCulture) + " с";
+                front.SetOverlay(text, true);
+                top.SetOverlay("Enter: остановить", true);
+                status.Text = text + " (" + (s.Recorder?.FramesWritten ?? 0) + " кадров), Enter: остановить раньше.";
             }
         }
 
@@ -436,6 +593,7 @@ namespace SensorView
             }
 
             tick++;
+            OnRecordTick(s);
             var frame = s.Latest;
             double[]? floor = frame?.Scene?.FloorPlane;
             double? hfov = null;
@@ -467,11 +625,11 @@ namespace SensorView
                 DrawDepth(s.LatestDepth);
             }
 
-            if (!busy && s.Elapsed.TotalMinutes >= LimitMinutes())
+            if (!busy && recState == RecState.Idle && s.Elapsed.TotalMinutes >= LimitMinutes())
             {
                 wantRunning = false;
                 await StopAsync();
-                status.Text = "Остановлено по таймеру (" + LimitMinutes().ToString("0.#", CultureInfo.InvariantCulture) + " мин): сенсор без вентиляции, пусть остынет.";
+                status.Text = "Остановлено по таймеру (" + LimitMinutes().ToString("0.#", CultureInfo.InvariantCulture) + " мин).";
             }
         }
 

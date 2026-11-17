@@ -39,6 +39,22 @@ namespace SensorView
             ClipToBounds = true;
         }
 
+        private string? overlay;
+        private bool overlayRed;
+
+        /// <summary>Крупная надпись по центру (обратный отсчёт, идёт запись), null убирает.</summary>
+        public void SetOverlay(string? text, bool red)
+        {
+            if (overlay == text && overlayRed == red)
+            {
+                return;
+            }
+
+            overlay = text;
+            overlayRed = red;
+            InvalidateVisual();
+        }
+
         public void SetData(SkeletonFrame? newFrame, string newTrackerId, double[]? newFloor, double? newHFovRad)
         {
             frame = newFrame;
@@ -83,6 +99,12 @@ namespace SensorView
             }
 
             Text(dc, title, 8, 6, 13, LabelBrush);
+            if (overlay != null)
+            {
+                var ft = new FormattedText(overlay, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI Semibold"), Math.Max(16, Math.Min(w / 14, 44)), overlayRed ? Brushes.OrangeRed : Brushes.Gold, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+                dc.DrawText(ft, new Point((w - ft.Width) / 2, (h - ft.Height) / 3));
+            }
+
             if (frame == null)
             {
                 return;
