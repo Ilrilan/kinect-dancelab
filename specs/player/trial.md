@@ -1,8 +1,9 @@
 # Player: пробный плеер (trial)
 
-> Status: draft
+> Status: realisation
 > Parent: [index.md](index.md)
 > Источник: задача владельца 2026-11-21: «сделать пробную версию плеера, в которой уже можно будет отрабатывать движение по эталону… любое из простых в датасете, плеер в окне с записью и музыкой, параллельно движется эталон-призрак, рядом мой призрак с оценкой успешности движения приблизительной».
+> Автономный режим: переходы сценарии→контракт и контракт→realisation сделаны агентом по распоряжению владельца 2026-11-21 («дальше едешь автономно до моего следующего сообщения»), подтверждение постфактум. Эталонная последовательность выбрана агентом: Lock gLO_sBM_c05_d14_mLO5_ch02 (ключ датасета gLO_sBM_cAll_d14_mLO5_ch02), сменная аргументом --seq.
 
 Проба проверяет весь путь насквозь: эталон из датасета, призраки, живой сенсор, приблизительная помоментная оценка. Это одноразовый прототип-инструмент `tools/player_trial`, а не старт приложения Player: его сценарии ([index.md](index.md)) ещё ждут подтверждения, контракты core-спеков не заполнены. Наработки (канонический вид, сравнение, отрисовка призраков) переиспользуются дальше, пробная метрика заменяется контрактом скоринга без изменения остального.
 
@@ -60,4 +61,71 @@
 
 ## Contract
 
-_(заполняется после подтверждения сценариев)_
+### Новое публичное API
+
+C# (`src/DanceLab.Core`, новый namespace `DanceLab.Core.Canonical`):
+
+- `CanonicalFrame`: восемь направлений костей единичной длины в системе торса (`uArmL, uArmR, lArmL, lArmR, thighL, thighR, shinL, shinR`, по три числа), `TorsoLeanRad, TorsoTurnRad, HeadTiltRad`, корень `RootForward, RootSide, RootHeight` в долях длины ноги, `HeadingRad`, `TSec`.
+- `CanonicalTrack`: `Fps`, `LegLengthM`, кадры; `CanonicalFrame Sample(double tSec)` с линейной интерполяцией.
+- `TrialComparer.Compare(CanonicalFrame reference, CanonicalFrame user)` → `TrialComparison { BoneDeviationRad[8], MeanDeviationRad, Coverage }`; Coverage доля костей, участвующих в сравнении (валидные у пользователя).
+- `TrialScorer` (stateful): хранит лучший временной сдвиг (окно E84, скорость изменения E85); `Update(double tSec, CanonicalFrame user)` → `TrialScore { Running01, Total01, Errors, Coverage, ShiftSec }`.
+- `Canonicalizer.ToCanonical(ReconstructedPose pose, IReadOnlyDictionary<string, LimbLengths> boneLengths, double legLengthM)` → `CanonicalFrame`: имена суставов от реконструкции, торс-фрейм по canonical-pose S7.
+
+Python (`tools/aist_import/canonical_export.py`):
+
+- CLI: `--seq <имя с cAll> [--src data/aist/extracted/keypoints3d] [--out data/derived/trial]`.
+- Выход: `<seq>.canonical.json` по схеме ниже; в stdout контрольные числа: количество кадров, медиана длины ноги в см, количество кадров с NaN.
+
+WPF (`tools/player_trial`, net48, WinExe, код-стиль sensor_view без XAML):
+
+- Аргументы: `--seq <имя>` (по умолчанию эталон пробы), `--tracker kinect|nuitrack|nuitrack-native|nuitrack-ai`, `--shot <png> [--shot-after сек]` (визуальная приёмка), `--no-sensor` (прогон эталона без сенсора).
+- Окно: слева видео (MediaElement, звук из дорожки видео), справа сцена с двумя призраками и HUD: бегущий процент, накопленный итог, счётчик грубых ошибок, покрытие, «не вижу».
+
+### Изменения существующего API
+
+Нет. Core, Capture и sensor_view не меняются; рендер призраков копируется из `tools/sensor_view/SkeletonCanvas.cs` в player_trial с адаптацией (два призрака, цвет кости по отклонению). Вынос в общую библиотеку делается при старте настоящего Player, не в пробе.
+
+### Интеграция
+
+- Живые источники позы: как в sensor_view (`KinectPoseSource`, `NuitrackPoseSource("viewer", ...)`), переключение трекера комбобоксом; реконструкция `MultiUserReconstructor`, в пробе берётся ближайший к сенсору пользователь.
+- Мастер-часы: позиция `MediaElement`; кадры сенсора приходят со своими таймстампами и сэмплируют эталон `CanonicalTrack.Sample` по часам видео.
+- Длины костей пользователя для эталон-призрака и нормировки корня: медиана по первым секундам живого скелета, до этого призрак эталона в длинах эталона.
+- Запись сессии: существующий `LiveRecorder` по кнопке, без изменений.
+
+### Типы / схемы данных
+
+`<seq>.canonical.json` (formatVersion 1, UTF-8, углы в радианах):
+
+```json
+{
+  "formatVersion": 1,
+  "sequence": "gLO_sBM_cAll_d14_mLO5_ch02",
+  "video": "gLO_sBM_c05_d14_mLO5_ch02.mp4",
+  "fps": 60,
+  "frameCount": 720,
+  "legLengthCm": 71.3,
+  "frames": [
+    {
+      "t": 0.0,
+      "bones": { "uArmL": [0,0,1], "uArmR": [0,0,1], "lArmL": [0,0,1], "lArmR": [0,0,1],
+                  "thighL": [0,1,0], "thighR": [0,1,0], "shinL": [0,1,0], "shinR": [0,1,0] },
+      "torso": { "lean": 0.0, "turn": 0.0 },
+      "head": { "tilt": 0.0 },
+      "root": { "forward": 0.0, "side": 0.0, "height": 0.9, "heading": 0.0 }
+    }
+  ]
+}
+```
+
+Построение из COCO-17 (импортёр): root = середина бёдер; neck = середина плеч (приближение пробы); chest = середина root-neck; head = середина ушей либо нос; система торса и единицы по canonical-pose S7 и S9; сглаженные точки `keypoints3d_optim`; кадры с NaN пропускаются с фиксацией в stdout.
+
+Отрисовка эталон-призрака: прямая кинематика по направлениям костей с длинами костей пользователя, старт от root, heading задаёт направление взгляда.
+
+---
+
+## Tasks
+
+- [ ] T1 Импортёр `canonical_export.py` и прогон на эталоне пробы
+- [ ] T2 Core: CanonicalFrame/Track, Canonicalizer, TrialComparer, TrialScorer, юнит-тесты (self-сравнение S8, поведение сдвига, счётчик ошибок)
+- [ ] T3 player_trial: окно, видео+звук, три трекера, призраки, HUD
+- [ ] T4 Верификация: полный прогон, скриншоты, критик по чек-листу, дизайнер
