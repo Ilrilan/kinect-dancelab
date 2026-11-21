@@ -38,6 +38,14 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import safe_pickle
 
+# при пайпе stdout в Windows может получить кодировку без символов вроде ‖;
+# замещаем некодируемые символы, а не роняем прогон после записи JSON
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 NOSE, LEYE, REYE, LEAR, REAR = 0, 1, 2, 3, 4
 LSHO, RSHO, LELB, RELB, LWRI, RWRI = 5, 6, 7, 8, 9, 10
 LHIP, RHIP, LKNE, RKNE, LANK, RANK = 11, 12, 13, 14, 15, 16
