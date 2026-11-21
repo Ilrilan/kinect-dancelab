@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -29,6 +30,31 @@ namespace PlayerTrial
         private readonly ComboBox trackerBox = new ComboBox { Width = 150, Margin = new Thickness(10, 8, 8, 8) };
         private readonly Button sensorButton = new Button { Content = "Старт сенсора", Width = 110, Margin = new Thickness(0, 8, 8, 8) };
         private readonly Button recordButton = new Button { Content = "Запись", Width = 90, Margin = new Thickness(0, 8, 8, 8) };
+
+        // вторая строка тулбара: управление воспроизведением (S12), отсчёт попытки (S14), ракурс (S13), скорость (S17)
+        private readonly Button playButton = new Button { Content = "⏸ Пауза", Width = 100, Margin = new Thickness(10, 8, 8, 8) };
+        private readonly Button restartButton = new Button { Content = "⟳ Рестарт", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly Button attemptButton = new Button { Content = "Попытка", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock countdownLabel = new TextBlock { Foreground = Text, Text = "Отсчёт:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
+        private readonly ComboBox countdownBox = new ComboBox { Width = 70, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock angleLabel = new TextBlock { Foreground = Text, Text = "Ракурс:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
+        private readonly ComboBox angleBox = new ComboBox { Width = 90, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock speedLabel = new TextBlock { Foreground = Text, Text = "Скорость", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
+        private readonly Slider speedSlider = new Slider { Width = 120, Minimum = 0.2, Maximum = 2.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock speedValue = new TextBlock { Foreground = Text, Text = "x1.0", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock countdownText = new TextBlock
+        {
+            Foreground = Text,
+            Background = new SolidColorBrush(Color.FromArgb(0xb0, 0x10, 0x11, 0x14)),
+            FontSize = 110,
+            FontWeight = FontWeights.Bold,
+            Padding = new Thickness(24),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+        private readonly DispatcherTimer countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         private LiveRecorder? recorder;
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
         private readonly MediaElement media = new MediaElement { Stretch = Stretch.Uniform, LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Close, ScrubbingEnabled = true };
@@ -78,14 +104,40 @@ namespace PlayerTrial
         private IReadOnlyDictionary<string, LimbLengths>? userBones;
         private double userLegM;
 
-        /// <summary>Мини-часы на случай, когда видео не нашлось: призраки всё равно двигаются по реальному времени.</summary>
+        // управление воспроизведением (S12-S14, S17)
+        private string? currentVideoFile;
+        private TimeSpan? pendingRestore;
+        private bool pendingResume;
+        private double speedFactor = 1.0;
+        private int countdownRemaining;
+
+        /// <summary>
+        /// Мини-часы на случай, когда видео не нашлось: призраки всё равно двигаются по реальному времени.
+        /// Прошедшее время умножается на коэффициент скорости (S17), смена коэффициента не даёт скачка.
+        /// </summary>
         private sealed class StopwatchLike
         {
             private readonly System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            private double accumulated;
+            private double lastMark;
+            private double rate = 1.0;
 
-            public double TotalSeconds => sw.Elapsed.TotalSeconds;
+            public double TotalSeconds => accumulated + ((sw.Elapsed.TotalSeconds - lastMark) * rate);
 
-            public void Restart() => sw.Restart();
+            public void SetRate(double newRate)
+            {
+                var now = sw.Elapsed.TotalSeconds;
+                accumulated += (now - lastMark) * rate;
+                lastMark = now;
+                rate = newRate;
+            }
+
+            public void Restart()
+            {
+                sw.Restart();
+                accumulated = 0;
+                lastMark = 0;
+            }
         }
 
         public MainWindow(Options options)
@@ -104,6 +156,17 @@ namespace PlayerTrial
             sensorButton.Click += async (s, e) => await OnSensorButton();
             recordButton.Click += (s, e) => ToggleRecord();
 
+            countdownBox.Items.Add("3");
+            countdownBox.Items.Add("4");
+            countdownBox.Items.Add("5");
+            countdownBox.SelectedIndex = 2;
+            playButton.Click += (s, e) => TogglePlay();
+            restartButton.Click += (s, e) => RestartFromZero();
+            attemptButton.Click += (s, e) => StartAttempt();
+            angleBox.SelectionChanged += (s, e) => SwitchAngle();
+            speedSlider.ValueChanged += (s, e) => OnSpeedChanged();
+            countdownTimer.Tick += (s, e) => CountdownTick();
+
             var bar = new DockPanel { Background = Panel, LastChildFill = false };
             DockPanel.SetDock(status, Dock.Right);
             bar.Children.Add(status);
@@ -111,13 +174,55 @@ namespace PlayerTrial
             bar.Children.Add(sensorButton);
             bar.Children.Add(recordButton);
 
+            var controls = new StackPanel { Orientation = Orientation.Horizontal, Background = Panel };
+            controls.Children.Add(playButton);
+            controls.Children.Add(restartButton);
+            controls.Children.Add(attemptButton);
+            controls.Children.Add(countdownLabel);
+            controls.Children.Add(countdownBox);
+            controls.Children.Add(angleLabel);
+            controls.Children.Add(angleBox);
+            controls.Children.Add(speedLabel);
+            controls.Children.Add(speedSlider);
+            controls.Children.Add(speedValue);
+            var bars = new StackPanel { Background = Panel };
+            bars.Children.Add(bar);
+            bars.Children.Add(controls);
+
             media.MediaOpened += (s, e) =>
             {
                 mediaOpened = true;
-                paused = false;
+                media.SpeedRatio = speedFactor;
+                if (pendingRestore.HasValue)
+                {
+                    // переключение ракурса (S13): восстановить позицию и прежнее состояние паузы, не автоплей с нуля
+                    media.Position = pendingRestore.Value;
+                    pendingRestore = null;
+                    var resume = pendingResume;
+                    pendingResume = false;
+                    paused = !resume;
+                    if (resume)
+                    {
+                        media.Play();
+                    }
+                    else
+                    {
+                        media.Pause();
+                    }
+                }
+                else
+                {
+                    paused = false;
+                }
+
+                UpdatePlayButton();
             };
             media.MediaFailed += (s, e) => status.Text = "Видео не открылось: " + e.ErrorException.Message;
-            media.MediaEnded += (s, e) => paused = true;
+            media.MediaEnded += (s, e) =>
+            {
+                paused = true;
+                UpdatePlayButton();
+            };
 
             var videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10) };
             videoPanel.Children.Add(media);
@@ -125,6 +230,7 @@ namespace PlayerTrial
             var ghostPanel = new Grid { Margin = new Thickness(5, 0, 10, 10) };
             ghostPanel.Children.Add(ghost);
             ghostPanel.Children.Add(hud);
+            ghostPanel.Children.Add(countdownText);
 
             var views = new Grid();
             views.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -135,8 +241,8 @@ namespace PlayerTrial
             views.Children.Add(ghostPanel);
 
             var root = new DockPanel();
-            DockPanel.SetDock(bar, Dock.Top);
-            root.Children.Add(bar);
+            DockPanel.SetDock(bars, Dock.Top);
+            root.Children.Add(bars);
             root.Children.Add(views);
             Content = root;
 
@@ -180,6 +286,8 @@ namespace PlayerTrial
             if (videoPath != null)
             {
                 videoOk = true;
+                currentVideoFile = videoPath;
+                PopulateAngles(videoPath);
                 media.Source = new Uri(videoPath);
                 media.Play();
             }
@@ -389,6 +497,13 @@ namespace PlayerTrial
 
             if (paused)
             {
+                // после MediaEnded Play() продолжает с конца и сразу кончается: начинаем с нуля
+                if (media.NaturalDuration.HasTimeSpan && media.Position >= media.NaturalDuration.TimeSpan - TimeSpan.FromMilliseconds(200))
+                {
+                    RestartFromZero();
+                    return;
+                }
+
                 media.Play();
                 paused = false;
             }
@@ -397,6 +512,142 @@ namespace PlayerTrial
                 media.Pause();
                 paused = true;
             }
+
+            UpdatePlayButton();
+        }
+
+        /// <summary>Текст кнопки плей/пауза всегда синхронен состоянию (кнопка и Space меняют одно и то же).</summary>
+        private void UpdatePlayButton() => playButton.Content = paused ? "▶ Плей" : "⏸ Пауза";
+
+        /// <summary>Попытка (S14): пауза видео и обратный отсчёт 3-5 с поверх сцены; по нулю рестарт с нуля (скорер тоже сбрасывается).</summary>
+        private void StartAttempt()
+        {
+            var idx = countdownBox.SelectedIndex;
+            countdownRemaining = idx == 0 ? 3 : idx == 1 ? 4 : 5;
+            countdownText.Text = countdownRemaining.ToString(CultureInfo.InvariantCulture);
+            countdownText.Visibility = Visibility.Visible;
+            if (mediaOpened && !paused)
+            {
+                media.Pause();
+                paused = true;
+                UpdatePlayButton();
+            }
+
+            // повторный клик во время отсчёта перезапускает отсчёт
+            countdownTimer.Stop();
+            countdownTimer.Start();
+        }
+
+        private void CountdownTick()
+        {
+            countdownRemaining--;
+            if (countdownRemaining > 0)
+            {
+                countdownText.Text = countdownRemaining.ToString(CultureInfo.InvariantCulture);
+                return;
+            }
+
+            countdownTimer.Stop();
+            countdownText.Visibility = Visibility.Collapsed;
+            RestartFromZero();
+        }
+
+        /// <summary>Ракурсы (S13): камеры c01..c09, для которых существует файл с заменённым первым cXX в имени.</summary>
+        private void PopulateAngles(string videoPath)
+        {
+            angleBox.Items.Clear();
+            var name = Path.GetFileName(videoPath);
+            var dir = Path.GetDirectoryName(videoPath);
+            var m = Regex.Match(name, "c\\d\\d");
+            if (!m.Success || string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            var current = m.Value;
+            for (var i = 1; i <= 9; i++)
+            {
+                var cam = "c" + i.ToString("00", CultureInfo.InvariantCulture);
+                var candidate = name.Remove(m.Index, m.Length).Insert(m.Index, cam);
+                if (File.Exists(Path.Combine(dir, candidate)))
+                {
+                    angleBox.Items.Add(cam);
+                }
+            }
+
+            if (angleBox.Items.Contains(current))
+            {
+                angleBox.SelectedItem = current;
+            }
+        }
+
+        /// <summary>Переключение ракурса (S13): позиция и состояние паузы сохраняются, восстанавливаются в MediaOpened.</summary>
+        private void SwitchAngle()
+        {
+            if (!videoOk || currentVideoFile == null)
+            {
+                return;
+            }
+
+            var cam = angleBox.SelectedItem as string;
+            if (string.IsNullOrEmpty(cam))
+            {
+                return;
+            }
+
+            var name = Path.GetFileName(currentVideoFile);
+            var m = Regex.Match(name, "c\\d\\d");
+            if (!m.Success || m.Value == cam)
+            {
+                return;
+            }
+
+            var dir = Path.GetDirectoryName(currentVideoFile);
+            if (string.IsNullOrEmpty(dir))
+            {
+                return;
+            }
+
+            var newPath = Path.Combine(dir, name.Remove(m.Index, m.Length).Insert(m.Index, cam));
+            if (!File.Exists(newPath))
+            {
+                return;
+            }
+
+            pendingRestore = mediaOpened ? media.Position : TimeSpan.Zero;
+            pendingResume = !paused;
+            currentVideoFile = newPath;
+            media.Source = new Uri(newPath);
+            if (pendingResume)
+            {
+                media.Play();
+            }
+
+            status.Text = "Ракурс " + cam + ", позиция " + pendingRestore.Value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " с сохраняется...";
+        }
+
+        /// <summary>Скорость (S17): SpeedRatio видео и коэффициент резервных часов, действует и во время воспроизведения.</summary>
+        private void OnSpeedChanged()
+        {
+            var v = Math.Round(speedSlider.Value, 1);
+            if (v < 0.2)
+            {
+                v = 0.2;
+            }
+
+            if (v > 2.0)
+            {
+                v = 2.0;
+            }
+
+            speedFactor = v;
+            speedValue.Text = "x" + v.ToString("0.0", CultureInfo.InvariantCulture);
+            if (mediaOpened)
+            {
+                media.SpeedRatio = v;
+            }
+
+            fallbackClock.SetRate(v);
         }
 
         private void RestartFromZero()
@@ -411,6 +662,8 @@ namespace PlayerTrial
 
             if (mediaOpened)
             {
+                // WPF MediaElement: после MediaEnded рестарт требует Stop перед сбросом позиции, иначе Play() не начинает заново
+                media.Stop();
                 media.Position = TimeSpan.Zero;
                 media.Play();
             }
@@ -418,6 +671,8 @@ namespace PlayerTrial
             {
                 fallbackClock.Restart();
             }
+
+            UpdatePlayButton();
         }
 
         private static int NearestUserId(SkeletonFrame frame, string trackerId)
@@ -598,6 +853,7 @@ namespace PlayerTrial
         private void StopNow()
         {
             timer.Stop();
+            countdownTimer.Stop();
             StopRecorder();
             try
             {
