@@ -1,0 +1,220 @@
+"""Экспорт канонической позы AIST++ в <seq>.canonical.json (контракт specs/player/trial.md).
+
+Вход: data/aist/extracted/keypoints3d/<seq>.pkl, ключ keypoints3d_optim (N, 17, 3),
+сантиметры, ось y вверх, x в сторону левого плеча, лицо по +z (docs/aist-format-findings.md).
+
+Построение из COCO-17 (по Contract в trial.md):
+  root  = середина бёдер (lhip, rhip)
+  neck  = середина плеч (lsho, rsho)  -- приближение пробы
+  chest = середина root-neck (в JSON не входит, нужны были для контракта C#)
+  head  = середина ушей (lear, rear), если недоступно -- нос
+
+Система торса (правая тройка, приближение canonical-pose S7):
+  up  = normalize(neck - root)
+  left = линия бёдер (lhip - rhip), ортогонализованная по up, единичная
+  forward = cross(left, up)          (left x up = forward, как x cross y = z)
+Направления костей -- единичные векторы в координатах (left, up, forward).
+Перемещение корня -- в долях длины ноги (canonical-pose S9), относительно первого
+валидного кадра, оси текущего heading: forward = по направлению взгляда,
+side = влево от взгляда, height = над полом.
+Пол: 2-й перцентиль высоты низшей лодыжки минус смещение лодыжка-подошва
+(6.4 см; 0.0705 * smpl_scaling, scaling 90-95 -> 6.2-6.6, docs/aist-format-findings.md).
+Если оценка пола отличается от глобальной медианы (71.6) больше чем на 10 см --
+глобальная медиана минус то же смещение (правило из findings).
+
+Кадры, где нужные точки NaN, пропускаются с подсчётом в stdout.
+
+Запуск: python canonical_export.py --seq <имя cAll> [--src ...] [--out ...]
+Порядок COCO-17: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb,
+lwri, rwri, lhip, rhip, lkne, rkne, lank, rank.
+"""
+import argparse
+import json
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import safe_pickle
+
+NOSE, LEYE, REYE, LEAR, REAR = 0, 1, 2, 3, 4
+LSHO, RSHO, LELB, RELB, LWRI, RWRI = 5, 6, 7, 8, 9, 10
+LHIP, RHIP, LKNE, RKNE, LANK, RANK = 11, 12, 13, 14, 15, 16
+
+# (имя в JSON, из сустава, в сустав)
+BONES = [
+    ("uArmL", LSHO, LELB), ("uArmR", RSHO, RELB),
+    ("lArmL", LELB, LWRI), ("lArmR", RELB, RWRI),
+    ("thighL", LHIP, LKNE), ("thighR", RHIP, RKNE),
+    ("shinL", LKNE, LANK), ("shinR", RKNE, RANK),
+]
+CORE_POINTS = [LSHO, RSHO, LELB, RELB, LWRI, RWRI, LHIP, RHIP, LKNE, RKNE, LANK, RANK]
+FPS = 60.0                  # findings: 720 кадров на 12 с
+FLOOR_P2_GLOBAL = 71.6      # глобальная медиана ank_p2, см (findings)
+SOLE_OFFSET_CM = 6.4        # лодыжка-подошва, середина 6.2-6.6 (findings)
+WORLD_UP = np.array([0.0, 1.0, 0.0])
+
+
+def unit(v):
+    n = np.linalg.norm(v)
+    return v / n
+
+
+def frame_coords(v, left, up, fwd):
+    """Мировой вектор -> координаты (left, up, forward)."""
+    return np.array([np.dot(v, left), np.dot(v, up), np.dot(v, fwd)])
+
+
+def main():
+    ap = argparse.ArgumentParser(description="AIST++ keypoints3d_optim -> canonical.json")
+    ap.add_argument("--seq", required=True, help="имя последовательности с cAll")
+    ap.add_argument("--src", default="data/aist/extracted/keypoints3d")
+    ap.add_argument("--out", default="data/derived/trial")
+    args = ap.parse_args()
+
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    src = args.src if os.path.isabs(args.src) else os.path.join(repo, args.src)
+    out_dir = args.out if os.path.isabs(args.out) else os.path.join(repo, args.out)
+    pkl_path = os.path.join(src, args.seq + ".pkl")
+    if not os.path.isfile(pkl_path):
+        sys.exit(f"нет входного файла: {pkl_path}")
+
+    data = safe_pickle.load(pkl_path)
+    K = np.asarray(data["keypoints3d_optim"], dtype=np.float64)
+    total = len(K)
+
+    # ---- отбор кадров: ядро скелета + голова (уши, иначе нос) ----
+    core_ok = np.isfinite(K[:, CORE_POINTS]).all(axis=(1, 2))
+    ears_ok = np.isfinite(K[:, LEAR]).all(axis=1) & np.isfinite(K[:, REAR]).all(axis=1)
+    nose_ok = np.isfinite(K[:, NOSE]).all(axis=1)
+    head_pts = np.full((len(K), 3), np.nan)
+    head_pts[ears_ok] = (K[ears_ok, LEAR] + K[ears_ok, REAR]) / 2.0
+    head_pts[~ears_ok & nose_ok] = K[~ears_ok & nose_ok, NOSE]
+    head_ok = np.isfinite(head_pts).all(axis=1)
+    keep = core_ok & head_ok
+    idx = np.flatnonzero(keep)
+    n_nan = total - len(idx)
+
+    P = K[keep]
+    H = head_pts[keep]
+
+    root = (P[:, LHIP] + P[:, RHIP]) / 2.0
+    neck = (P[:, LSHO] + P[:, RSHO]) / 2.0
+
+    # ---- длины костей (мировые, см); rotation сохраняет длину ----
+    lengths = {}
+    for name, a, b in BONES:
+        lengths[name] = np.linalg.norm(P[:, b] - P[:, a], axis=1)
+
+    leg_per_side = np.linalg.norm(P[:, LKNE] - P[:, LHIP], axis=1) + \
+        np.linalg.norm(P[:, LANK] - P[:, LKNE], axis=1), \
+        np.linalg.norm(P[:, RKNE] - P[:, RHIP], axis=1) + \
+        np.linalg.norm(P[:, RANK] - P[:, RKNE], axis=1)
+    leg_all = np.concatenate(leg_per_side)
+    leg_len = float(np.median(leg_all))
+
+    # ---- пол (findings: правило оценки) ----
+    ank_min = np.minimum(P[:, LANK, 1], P[:, RANK, 1])
+    floor_p2 = float(np.percentile(ank_min, 2))
+    floor_flag = ""
+    if abs(floor_p2 - FLOOR_P2_GLOBAL) > 10.0:
+        floor_y = FLOOR_P2_GLOBAL - SOLE_OFFSET_CM
+        floor_flag = "  [ВНИМАНИЕ: пол по данным подозрителен, взят глобальный]"
+    else:
+        floor_y = floor_p2 - SOLE_OFFSET_CM
+
+    root0 = root[0]
+    bones_out_dev = 0.0
+    frames = []
+    for i in range(len(P)):
+        up = unit(neck[i] - root[i])
+        hl = P[i, LHIP] - P[i, RHIP]
+        hl_o = hl - up * np.dot(hl, up)
+        left = unit(hl_o)
+        fwd = np.cross(left, up)
+
+        bones = {}
+        for name, a, b in BONES:
+            v = unit(P[i, b] - P[i, a])
+            bones_out_dev = max(bones_out_dev, abs(np.linalg.norm(v) - 1.0))
+            bones[name] = frame_coords(v, left, up, fwd)
+
+        sl = P[i, LSHO] - P[i, RSHO]
+        sl_o = sl - up * np.dot(sl, up)
+        # поворот плечевой линии относительно бёдерно-заданной системы торса
+        turn = float(np.arctan2(np.dot(sl_o, fwd), np.dot(sl_o, left)))
+
+        fwd_h = fwd - WORLD_UP * np.dot(fwd, WORLD_UP)
+        fwd_h = unit(fwd_h)
+        # наклон торса от вертикали в сагиттальной плоскости (вперёд -- плюс)
+        lean = float(np.arctan2(np.dot(up, fwd_h), float(np.dot(up, WORLD_UP))))
+        heading = float(np.arctan2(fwd_h[0], fwd_h[2]))
+        left_h = np.cross(WORLD_UP, fwd_h)  # y cross z = x, влево
+
+        hd = unit(H[i] - neck[i])
+        tilt = float(np.arctan2(np.dot(hd, fwd_h), np.dot(hd, up)))
+
+        dr = root[i] - root0
+        frames.append({
+            "t": round(idx[i] / FPS, 4),
+            "bones": {k: [round(float(x), 4) for x in bones[k]] for k in
+                      ("uArmL", "uArmR", "lArmL", "lArmR", "thighL", "thighR", "shinL", "shinR")},
+            "torso": {"lean": round(lean, 4), "turn": round(turn, 4)},
+            "head": {"tilt": round(tilt, 4)},
+            "root": {
+                "forward": round(float(np.dot(dr, fwd_h)) / leg_len, 4),
+                "side": round(float(np.dot(dr, left_h)) / leg_len, 4),
+                "height": round(float(root[i, 1] - floor_y) / leg_len, 4),
+                "heading": round(heading, 4),
+            },
+        })
+
+    result = {
+        "formatVersion": 1,
+        "sequence": args.seq,
+        "video": args.seq.replace("cAll", "c05") + ".mp4",
+        "fps": 60,
+        "frameCount": len(frames),
+        "legLengthCm": round(leg_len, 1),
+        "frames": frames,
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, args.seq + ".canonical.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=1)
+
+    # ---- контрольные числа ----
+    print(f"последовательность: {args.seq}")
+    print(f"кадров всего: {total}, пропущено (NaN/голова): {n_nan}, выведено: {len(frames)}")
+    if floor_flag:
+        print(f"пол: p2 лодыжек {floor_p2:.1f} см -> floor_y {floor_y:.1f} см{floor_flag}")
+    else:
+        print(f"пол: p2 лодыжек {floor_p2:.1f} см -> floor_y {floor_y:.1f} см")
+    print(f"медиана длины ноги (бедро+голень, оба борта): {leg_len:.2f} см")
+    print("длины костей, см (мин..макс):")
+    for name in ("uArmL", "uArmR", "lArmL", "lArmR", "thighL", "thighR", "shinL", "shinR"):
+        v = lengths[name]
+        print(f"  {name:7s} {v.min():6.2f} .. {v.max():6.2f}  медиана {np.median(v):6.2f}")
+    print(f"единичность bones: макс |‖v‖-1| = {bones_out_dev:.2e}")
+
+    # ---- санити ----
+    sho_hip = float(np.mean((neck[:, 1] - root[:, 1])))
+    d = idx[0]
+    print("--- санити ---")
+    print(f"плечи выше бёдер в среднем на {sho_hip:.2f} см (ось y вверх): "
+          + ("ок" if sho_hip > 0 else "ПРОВАЛ"))
+    print(f"кадр {d}: lhip.x - rhip.x = {K[d, LHIP, 0] - K[d, RHIP, 0]:+.2f}, "
+          f"lsho.x - rsho.x = {K[d, LSHO, 0] - K[d, RSHO, 0]:+.2f} "
+          f"(x в сторону левого плеча: ожидался плюс)")
+    for pair in (("uArmL", "uArmR"), ("lArmL", "lArmR"), ("thighL", "thighR"), ("shinL", "shinR")):
+        ml, mr = np.median(lengths[pair[0]]), np.median(lengths[pair[1]])
+        print(f"  медианы {pair[0]}={ml:.2f} vs {pair[1]}={mr:.2f} см "
+              f"(асимметрия {abs(ml - mr) / max(ml, mr) * 100:.1f}%)")
+    print(f"heading первого кадра: {frames[0]['root']['heading']:+.3f} рад "
+          f"(лицо по +z: ожидалось около 0)")
+    print(f"выход: {out_path}")
+
+
+if __name__ == "__main__":
+    main()
