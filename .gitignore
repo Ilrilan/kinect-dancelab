@@ -65,6 +65,3 @@ desktop.ini
 # --- Claude Code: локальные настройки не шарим, общие (settings.json) шарим ---
 .claude/settings.local.json
 node_modules/
-
-# --- ZCode: локальная память агента — правила владельца, не правила проекта; не шарим ---
-.zcode/memory/

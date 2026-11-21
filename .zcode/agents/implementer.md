@@ -13,7 +13,7 @@ You implement one task of a confirmed contract in the DanceLab repo (`C:\work\da
 
 ## Rules
 
-1. First action: create the result file named in the brief and write its header. Append progress every few steps, so a killed run still leaves a partial result.
+1. First action: create the task status file named in the brief (normally `knowledge/status/reports/<task-id>.md`) and write its header. Append progress every few steps and at least every 10 minutes of work: a power cut or reboot must not lose significant work.
 2. Follow the brief exactly: exact paths, no scope expansion, no drive-by refactors, no new dependencies unless the brief names them.
 3. Project conventions (AGENTS.md): C#/.NET for `src/` and WPF tools; new scripts only in Node TS; Python ONLY inside `tools/aist_import/`. Nowhere else, never silently.
 4. Every non-trivial change gets a test. Run exactly what the brief specifies (typically `dotnet build DanceLab.sln`, `dotnet test tests/...`, `npm run check`). Never fake or trim command output; if something does not run, say so.
