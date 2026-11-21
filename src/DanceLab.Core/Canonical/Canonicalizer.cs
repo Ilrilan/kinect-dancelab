@@ -12,7 +12,9 @@ namespace DanceLab.Core.Canonical
     /// heading = atan2(вперёд.x, вперёд.z). Имена суставов — как у реконструкции: Kinect (ShoulderLeft),
     /// Nuitrack (LeftShoulder) и канонические (shoulder_l); chest/neck/head приходят от трекеров напрямую
     /// (SpineMid/Torso, Neck, Head). Перемещение корня — в долях длины ноги (S9), в осях текущего heading
-    /// (вперёд — по взгляду, side — влево от взгляда, height — над полом y=0); в метрику пробы корень не входит.
+    /// (вперёд — по взгляду, side — влево от взгляда); в метрику пробы корень не входит.
+    /// Высота корня считается над полом сцены floorYm (S15: оценка пола живой сцены по лодыжкам),
+    /// не над нулём сенсора; floorYm по умолчанию 0 — прежнее поведение (высота над y=0 сенсора).
     /// </summary>
     public static class Canonicalizer
     {
@@ -46,7 +48,7 @@ namespace DanceLab.Core.Canonical
             new[] { "AnkleRight", "RightAnkle", "ankle_r" },
         };
 
-        public static CanonicalFrame ToCanonical(ReconstructedPose pose, IReadOnlyDictionary<string, LimbLengths>? boneLengths, double legLengthM)
+        public static CanonicalFrame ToCanonical(ReconstructedPose pose, IReadOnlyDictionary<string, LimbLengths>? boneLengths, double legLengthM, double floorYm = 0)
         {
             if (pose == null)
             {
@@ -179,7 +181,7 @@ namespace DanceLab.Core.Canonical
                 var leftOfView = new Vec3(forwardH.Z, 0, -forwardH.X);
                 rootForward = Vec3.Dot(rootPos, forwardH) / leg;
                 rootSide = Vec3.Dot(rootPos, leftOfView) / leg;
-                rootHeight = rootPos.Y / leg;
+                rootHeight = (rootPos.Y - floorYm) / leg; // S15: над полом сцены, не над нулём сенсора
             }
 
             return new CanonicalFrame(pose.DeviceTimeUs / 1e6, bones, valid, lean, turn, headTilt, rootForward, rootSide, rootHeight, heading);

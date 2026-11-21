@@ -185,7 +185,10 @@ namespace PlayerTrial
 
             dc.DrawLine(FloorPen, new Point(0, floorY), new Point(w, floorY));
             Text(dc, "пол", 6, floorY - 16, 11, FloorPen.Brush);
-            Text(dc, "вид спереди (x, y), метки сетки 1 м", 8, 6, 13, LabelBrush);
+
+            // подпись панели прижата к правому верхнему углу: слева её перекрывает HUD пробы
+            var title = MakeText("вид спереди (x, y), метки сетки 1 м", 13, LabelBrush);
+            dc.DrawText(title, new Point(w - title.Width - 8, 6));
         }
 
         /// <summary>Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям канонической позы.</summary>
@@ -308,10 +311,14 @@ namespace PlayerTrial
                 (byte)(baseColor.B + ((ErrorColor.B - baseColor.B) * t)));
         }
 
+        private FormattedText MakeText(string text, double size, Brush brush)
+        {
+            return new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        }
+
         private void Text(DrawingContext dc, string text, double x, double y, double size, Brush brush)
         {
-            var ft = new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
-            dc.DrawText(ft, new Point(x, y));
+            dc.DrawText(MakeText(text, size, brush), new Point(x, y));
         }
 
         private static T Freeze<T>(T freezable)

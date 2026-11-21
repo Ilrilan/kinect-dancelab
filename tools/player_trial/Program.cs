@@ -23,6 +23,9 @@ namespace PlayerTrial
         /// <summary>kinect, nuitrack, nuitrack-native или nuitrack-ai (nuitrack то же, что nuitrack-ai).</summary>
         public string Tracker { get; private set; } = "kinect";
 
+        /// <summary>Стартовый режим окна (S16): probe (проба, по умолчанию) или scene (сцена сенсора).</summary>
+        public string Mode { get; private set; } = "probe";
+
         public bool NoSensor { get; private set; }
 
         public string? ShotPath { get; private set; }
@@ -43,6 +46,12 @@ namespace PlayerTrial
             if (tracker == "nuitrack" || tracker == "nuitrack-native" || tracker == "nuitrack-ai")
             {
                 o.Tracker = tracker;
+            }
+
+            var mode = Opt("--mode");
+            if (mode == "probe" || mode == "scene")
+            {
+                o.Mode = mode;
             }
 
             o.NoSensor = Array.IndexOf(args, "--no-sensor") >= 0;

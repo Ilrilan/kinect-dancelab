@@ -210,6 +210,17 @@ namespace DanceLab.Core.Tests
             Assert.Equal(0.0, f.RootSide, 9);
         }
 
+        /// <summary>S15: высота корня считается от пола сцены floorYm, по умолчанию 0 — прежнее поведение.</summary>
+        [Fact]
+        public void ToCanonicalRootHeightIsAboveSceneFloor()
+        {
+            var aboveZero = Canonicalizer.ToCanonical(CanonSynth.Figure(), CanonSynth.Bones(), CanonSynth.Leg);
+            Assert.Equal(0.95 / CanonSynth.Leg, aboveZero.RootHeight, 9);
+
+            var aboveFloor = Canonicalizer.ToCanonical(CanonSynth.Figure(), CanonSynth.Bones(), CanonSynth.Leg, 0.10);
+            Assert.Equal(0.85 / CanonSynth.Leg, aboveFloor.RootHeight, 9);
+        }
+
         [Fact]
         public void ToCanonicalComputesLeanAndHeadTilt()
         {

@@ -31,6 +31,31 @@ namespace PlayerTrial
         private readonly Button sensorButton = new Button { Content = "Старт сенсора", Width = 110, Margin = new Thickness(0, 8, 8, 8) };
         private readonly Button recordButton = new Button { Content = "Запись", Width = 90, Margin = new Thickness(0, 8, 8, 8) };
 
+        // переключатель режимов одного окна (S16): «Проба» / «Сцена сенсора»
+        private readonly TextBlock modeLabel = new TextBlock { Foreground = Text, Text = "Режим:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 8, 4, 8) };
+        private readonly ComboBox modeBox = new ComboBox { Width = 140, Margin = new Thickness(0, 8, 8, 8) };
+
+        // панель «Сцена сенсора» (S16): Front слева, Top справа, статистика снизу, текст без сессии
+        private readonly SceneCanvas sceneFront = new SceneCanvas(false, "вид спереди (x, y)");
+        private readonly SceneCanvas sceneTop = new SceneCanvas(true, "вид сверху (x, z)");
+        private readonly TextBlock sceneStats = new TextBlock
+        {
+            Foreground = Text,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 14,
+            Padding = new Thickness(8),
+            Margin = new Thickness(8, 4, 8, 8),
+        };
+        private readonly TextBlock sceneNoSensor = new TextBlock
+        {
+            Foreground = Text,
+            FontSize = 22,
+            Text = "сенсор не запущен",
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+        };
+
         // вторая строка тулбара: управление воспроизведением (S12), отсчёт попытки (S14), ракурс (S13), скорость (S17)
         private readonly Button playButton = new Button { Content = "⏸ Пауза", Width = 100, Margin = new Thickness(10, 8, 8, 8) };
         private readonly Button restartButton = new Button { Content = "⟳ Рестарт", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
@@ -59,6 +84,8 @@ namespace PlayerTrial
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
         private readonly MediaElement media = new MediaElement { Stretch = Stretch.Uniform, LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Close, ScrubbingEnabled = true };
         private readonly GhostCanvas ghost = new GhostCanvas();
+        private readonly Grid views = new Grid();
+        private readonly Grid sceneView = new Grid { Visibility = Visibility.Collapsed };
         private readonly TextBlock hud = new TextBlock
         {
             Foreground = Text,
@@ -78,6 +105,7 @@ namespace PlayerTrial
         private TrialScorer? scorer;
         private TrialScore? lastScore;
         private PlayerSession? session;
+        private AppMode mode = AppMode.Probe;
         private bool busy;
         private bool wantRunning;
         private bool paused;
@@ -90,6 +118,20 @@ namespace PlayerTrial
 
         // калибровка: медианы длин костей по первым секундам живого скелета, потом фиксированы
         private const double CalibrationSeconds = 5.0;
+
+        // пол сцены (S15): высоты лодыжек ближайшего пользователя, скользящее окно, оценка — 2-й перцентиль
+        private const int FloorSampleCap = 300;
+        private const int FloorMinSamples = 30;
+        private const int FloorRecalcTicks = 30; // пересчёт не чаще раза в секунду (тики по 33 мс)
+        private static readonly string[][] AnkleNames =
+        {
+            new[] { "AnkleLeft", "LeftAnkle", "ankle_l" },
+            new[] { "AnkleRight", "RightAnkle", "ankle_r" },
+        };
+        private readonly List<double> floorAnkleHeights = new List<double>();
+        private double floorYm;
+        private bool floorReady;
+        private long lastFloorSampleUs = -1;
         private readonly List<double> calArmLU = new List<double>();
         private readonly List<double> calArmLL = new List<double>();
         private readonly List<double> calArmRU = new List<double>();
@@ -110,6 +152,13 @@ namespace PlayerTrial
         private bool pendingResume;
         private double speedFactor = 1.0;
         private int countdownRemaining;
+
+        /// <summary>Режимы одного окна (S16): проба с видео и оценкой либо сцена сенсора без видео.</summary>
+        private enum AppMode
+        {
+            Probe,
+            Scene,
+        }
 
         /// <summary>
         /// Мини-часы на случай, когда видео не нашлось: призраки всё равно двигаются по реальному времени.
@@ -155,6 +204,10 @@ namespace PlayerTrial
             trackerBox.SelectionChanged += async (s, e) => await OnTrackerChanged();
             sensorButton.Click += async (s, e) => await OnSensorButton();
             recordButton.Click += (s, e) => ToggleRecord();
+            modeBox.Items.Add("Проба");
+            modeBox.Items.Add("Сцена сенсора");
+            modeBox.SelectedIndex = 0;
+            modeBox.SelectionChanged += (s, e) => OnModeChanged();
 
             countdownBox.Items.Add("3");
             countdownBox.Items.Add("4");
@@ -170,6 +223,8 @@ namespace PlayerTrial
             var bar = new DockPanel { Background = Panel, LastChildFill = false };
             DockPanel.SetDock(status, Dock.Right);
             bar.Children.Add(status);
+            bar.Children.Add(modeLabel);
+            bar.Children.Add(modeBox);
             bar.Children.Add(trackerBox);
             bar.Children.Add(sensorButton);
             bar.Children.Add(recordButton);
@@ -232,7 +287,6 @@ namespace PlayerTrial
             ghostPanel.Children.Add(hud);
             ghostPanel.Children.Add(countdownText);
 
-            var views = new Grid();
             views.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             views.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             Grid.SetColumn(videoPanel, 0);
@@ -240,11 +294,38 @@ namespace PlayerTrial
             views.Children.Add(videoPanel);
             views.Children.Add(ghostPanel);
 
+            // панель сцены сенсора (S16): два SceneCanvas и строка статистики снизу
+            sceneView.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            sceneView.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            sceneView.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            sceneView.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetColumn(sceneFront, 0);
+            Grid.SetRow(sceneFront, 0);
+            Grid.SetColumn(sceneTop, 1);
+            Grid.SetRow(sceneTop, 0);
+            Grid.SetColumnSpan(sceneStats, 2);
+            Grid.SetRow(sceneStats, 1);
+            Grid.SetColumnSpan(sceneNoSensor, 2);
+            Grid.SetRow(sceneNoSensor, 0);
+            sceneView.Children.Add(sceneFront);
+            sceneView.Children.Add(sceneTop);
+            sceneView.Children.Add(sceneStats);
+            sceneView.Children.Add(sceneNoSensor);
+
+            var main = new Grid();
+            main.Children.Add(views);
+            main.Children.Add(sceneView);
+
             var root = new DockPanel();
             DockPanel.SetDock(bars, Dock.Top);
             root.Children.Add(bars);
-            root.Children.Add(views);
+            root.Children.Add(main);
             Content = root;
+
+            if (opts.Mode == "scene")
+            {
+                modeBox.SelectedIndex = 1; // стартовый режим --mode scene (S16), сразу включает панель сцены
+            }
 
             status.Text = "Загрузка...";
             PreviewKeyDown += (s, e) =>
@@ -314,6 +395,17 @@ namespace PlayerTrial
         private void OnTick()
         {
             tick++;
+            if (tick % FloorRecalcTicks == 0)
+            {
+                RecalcFloor(); // пол сцены (S15): не чаще раза в секунду
+            }
+
+            if (mode == AppMode.Scene)
+            {
+                UpdateScene();
+                return;
+            }
+
             if (track == null)
             {
                 return;
@@ -353,8 +445,9 @@ namespace PlayerTrial
             }
 
             CollectCalibration(lengths, frame.DeviceTimeUs);
+            CollectFloorSample(pose, frame.DeviceTimeUs);
             var legM = calibrated && userLegM > 0 ? userLegM : track!.LegLengthM;
-            var userFrame = Canonicalizer.ToCanonical(pose, userBones, legM);
+            var userFrame = Canonicalizer.ToCanonical(pose, userBones, legM, floorYm);
 
             // скоринг по часам видео, раз на новый момент времени (пауза не копит историю)
             if (scorer != null && !paused && !(Math.Abs(t - lastScoredT) < 1e-9))
@@ -464,9 +557,10 @@ namespace PlayerTrial
         {
             var inv = CultureInfo.InvariantCulture;
             var timeLine = "Время: " + TimeSpan.FromSeconds(t).ToString(@"mm\:ss", inv);
+            var floorLine = FloorHudLine(inv); // S15: оценка пола или «оцениваю»
             if (opts.NoSensor || session == null)
             {
-                hud.Text = "без сенсора" + Environment.NewLine + timeLine;
+                hud.Text = "без сенсора" + Environment.NewLine + timeLine + Environment.NewLine + floorLine;
                 return;
             }
 
@@ -474,13 +568,156 @@ namespace PlayerTrial
             var score = lastScore;
             if (!seen || score == null)
             {
-                hud.Text = "не вижу" + Environment.NewLine + timeLine;
+                hud.Text = "не вижу" + Environment.NewLine + timeLine + Environment.NewLine + floorLine;
                 return;
             }
 
             hud.Text = "Бегущий: " + (score.Running01 * 100).ToString("0", inv) + "%   Итог: " + (score.Total01 * 100).ToString("0", inv) + "%" + Environment.NewLine
                 + "Грубые: " + score.Errors.ToString(inv) + "   Покрытие: " + (score.Coverage * 100).ToString("0", inv) + "%" + Environment.NewLine
-                + "Сдвиг: " + score.ShiftSec.ToString("0.00", inv) + " с   " + timeLine;
+                + "Сдвиг: " + score.ShiftSec.ToString("0.00", inv) + " с   " + timeLine + Environment.NewLine
+                + floorLine;
+        }
+
+        /// <summary>Пол сцены (S15): за кадр — минимум высот валидных лодыжек ближайшего пользователя, окно до 300 значений.</summary>
+        private void CollectFloorSample(ReconstructedPose pose, long deviceTimeUs)
+        {
+            if (deviceTimeUs == lastFloorSampleUs)
+            {
+                return;
+            }
+
+            lastFloorSampleUs = deviceTimeUs;
+            var best = double.MaxValue;
+            foreach (var aliases in AnkleNames)
+            {
+                ReconstructedJoint? ankle = null;
+                foreach (var name in aliases)
+                {
+                    ankle = pose.Find(name);
+                    if (ankle != null)
+                    {
+                        break;
+                    }
+                }
+
+                if (ankle != null && ankle.Origin != JointOrigin.Invalid && ankle.Y < best)
+                {
+                    best = ankle.Y;
+                }
+            }
+
+            if (best == double.MaxValue)
+            {
+                return;
+            }
+
+            if (floorAnkleHeights.Count >= FloorSampleCap)
+            {
+                floorAnkleHeights.RemoveAt(0);
+            }
+
+            floorAnkleHeights.Add(best);
+        }
+
+        /// <summary>Оценка пола (S15): 2-й перцентиль окна лодыжек; пока меньше 30 значений — floorYm = 0.</summary>
+        private void RecalcFloor()
+        {
+            if (floorAnkleHeights.Count < FloorMinSamples)
+            {
+                floorReady = false;
+                floorYm = 0;
+                return;
+            }
+
+            var sorted = new List<double>(floorAnkleHeights);
+            sorted.Sort();
+            var idx = (int)Math.Ceiling(sorted.Count * 0.02) - 1;
+            idx = Math.Max(0, Math.Min(sorted.Count - 1, idx));
+            floorYm = sorted[idx];
+            floorReady = true;
+        }
+
+        private string FloorHudLine(CultureInfo inv) =>
+            floorReady ? "пол: " + floorYm.ToString("0.00", inv) + " м" : "пол: оцениваю";
+
+        /// <summary>Режим «Сцена сенсора» (S16): скелеты всех людей в оба вида, статистика потока; без сессии — «сенсор не запущен».</summary>
+        private void UpdateScene()
+        {
+            var s = session;
+            var users = new List<(int id, ReconstructedPose pose)>();
+            var nearest = -1;
+            var rootY = double.NaN;
+            if (s != null)
+            {
+                var frame = s.Latest;
+                if (frame != null)
+                {
+                    nearest = NearestUserId(frame, s.TrackerId);
+                    foreach (var u in frame.Users)
+                    {
+                        if (!s.TryGetUser(u.Id, out var pose, out _))
+                        {
+                            continue;
+                        }
+
+                        users.Add((u.Id, pose));
+                        if (u.Id == nearest)
+                        {
+                            CollectFloorSample(pose, frame.DeviceTimeUs);
+                            rootY = RootHeight(pose);
+                        }
+                    }
+                }
+            }
+
+            var trackerId = s?.TrackerId ?? Topology.Kinect;
+            sceneFront.TrackerId = trackerId;
+            sceneTop.TrackerId = trackerId;
+            sceneFront.SetUsers(users);
+            sceneTop.SetUsers(users);
+            sceneFront.SetFloor(floorYm, floorReady);
+            if (tick % 6 == 0)
+            {
+                var inv = CultureInfo.InvariantCulture;
+                sceneStats.Text = "скелет: " + (s?.SkeletonFps ?? 0).ToString("0.0", inv) + " fps" + Environment.NewLine
+                    + "людей в кадре: " + users.Count.ToString(inv) + Environment.NewLine
+                    + "ближайший: " + (nearest >= 0 ? "id " + nearest.ToString(inv) : "—") + Environment.NewLine
+                    + FloorHudLine(inv) + Environment.NewLine
+                    + "корень ближайшего: " + (double.IsNaN(rootY) ? "—" : rootY.ToString("0.00", inv) + " м");
+                sceneNoSensor.Visibility = s == null ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        /// <summary>Высота корня (таз) над нулём сенсора, м; NaN, если корень недоступен.</summary>
+        private static double RootHeight(ReconstructedPose pose)
+        {
+            foreach (var name in new[] { "SpineBase", "Waist", "root" })
+            {
+                var j = pose.Find(name);
+                if (j != null && j.Origin != JointOrigin.Invalid)
+                {
+                    return j.Y;
+                }
+            }
+
+            return double.NaN;
+        }
+
+        /// <summary>Переключение режима мгновенное (S16): сессия сенсора не трогается, видео продолжает играть.</summary>
+        private void OnModeChanged()
+        {
+            var scene = modeBox.SelectedIndex == 1;
+            if (scene == (mode == AppMode.Scene))
+            {
+                return;
+            }
+
+            mode = scene ? AppMode.Scene : AppMode.Probe;
+            views.Visibility = scene ? Visibility.Collapsed : Visibility.Visible;
+            sceneView.Visibility = scene ? Visibility.Visible : Visibility.Collapsed;
+            status.Text = scene
+                ? "Режим сцены сенсора: скелеты всех людей, вид спереди и сверху."
+                : "Режим пробы: " + opts.Seq + ".";
         }
 
         private double ClockSeconds()
