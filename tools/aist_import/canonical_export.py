@@ -1,7 +1,20 @@
 """Экспорт канонической позы AIST++ в <seq>.canonical.json (контракт specs/player/trial.md).
 
-Вход: data/aist/extracted/keypoints3d/<seq>.pkl, ключ keypoints3d_optim (N, 17, 3),
-сантиметры, ось y вверх, x в сторону левого плеча, лицо по +z (docs/aist-format-findings.md).
+--source smpl (умолчание, canonical-pose S12, основной путь): прямая кинематика
+SMPL по smpl_poses из data/aist/extracted/motions/<seq>.pkl. Модель (нулевая форма)
+в data/smpl/.../basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl; формула FK и проверка --
+docs/aist-format-findings.md (расхождение с точками около 3 см). Маппинг суставов
+(порядок подтверждён по модели, см. smpl_fk.py; canonical-pose Вариант A):
+  root  = pelvis (0)          chest = spine2 (6)   -- в JSON не входит
+  neck  = середина плеч SMPL (16, 17) -- конвенция T13, как у живой позы
+  head  = head (15)
+  плечо/локоть/запястье = 16/17, 18/19, 20/21
+  бедро/колено/лодыжка = 1/2, 4/5, 7/8
+
+--source coco (прежний путь пробы, без изменений): сглаженные точки COCO-17 из
+data/aist/extracted/keypoints3d/<seq>.pkl, ключ keypoints3d_optim (N, 17, 3),
+сантиметры, ось y вверх, x в сторону левого плеча, лицо по +z
+(docs/aist-format-findings.md).
 
 Построение из COCO-17 (по Contract в trial.md):
   root  = середина бёдер (lhip, rhip)
@@ -33,9 +46,12 @@ pkl (микросекунды), в JSON переводится в секунды
 Формат: {"formatVersion":1, "fps":60, "frameCount":N,
 "cameras":{"c01":{"frames":[{"t":..,"root":[u,v],"bbox":[..]},...]},...}}.
 
-Запуск: python canonical_export.py --seq <имя cAll> [--src ...] [--src2d ...] [--out ...]
+Запуск: python canonical_export.py --seq <имя cAll> [--source smpl|coco]
+    [--src ...] [--src-smpl ...] [--smpl-model ...] [--src2d ...] [--out ...]
 Порядок COCO-17: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb,
 lwri, rwri, lhip, rhip, lkne, rkne, lank, rank.
+В JSON пишется поле "source" ("smpl" или "coco"); бандл фиксирует источник
+(canonical-pose S12). C#-загрузчик незнакомые поля пропускает.
 """
 import argparse
 import json
@@ -46,6 +62,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import safe_pickle
+import smpl_fk
 
 # при пайпе stdout в Windows может получить кодировку без символов вроде ‖;
 # замещаем некодируемые символы, а не роняем прогон после записи JSON
@@ -67,6 +84,15 @@ BONES = [
     ("shinL", LKNE, LANK), ("shinR", RKNE, RANK),
 ]
 CORE_POINTS = [LSHO, RSHO, LELB, RELB, LWRI, RWRI, LHIP, RHIP, LKNE, RKNE, LANK, RANK]
+# SMPL-суставы -> колонки 5..16 раскладки COCO-17 (lsho..rank), см. smpl_fk.py
+SMPL_TO_COCO = (smpl_fk.L_SHOULDER, smpl_fk.R_SHOULDER,
+                smpl_fk.L_ELBOW, smpl_fk.R_ELBOW,
+                smpl_fk.L_WRIST, smpl_fk.R_WRIST,
+                smpl_fk.L_HIP, smpl_fk.R_HIP,
+                smpl_fk.L_KNEE, smpl_fk.R_KNEE,
+                smpl_fk.L_ANKLE, smpl_fk.R_ANKLE)
+DEFAULT_SMPL_MODEL = os.path.join("data", "smpl", "SMPL_python_v.1.1.0", "smpl", "models",
+                                  "basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl")
 FPS = 60.0                  # findings: 720 кадров на 12 с
 CAM_SCORE_MIN = 0.3         # следящий кадр (S21/T12): бёдра с меньшим score пропускаются
 FLOOR_P2_GLOBAL = 71.6      # глобальная медиана ank_p2, см (findings)
@@ -141,9 +167,17 @@ def export_cams(seq, kp2d_path, out_dir):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="AIST++ keypoints3d_optim -> canonical.json (+ .cams.json)")
+    ap = argparse.ArgumentParser(description="AIST++ SMPL FK / keypoints3d_optim -> canonical.json (+ .cams.json)")
     ap.add_argument("--seq", required=True, help="имя последовательности с cAll")
-    ap.add_argument("--src", default="data/aist/extracted/keypoints3d")
+    ap.add_argument("--source", choices=("smpl", "coco"), default="smpl",
+                    help="источник эталона: smpl = FK по smpl_poses (canonical-pose S12, "
+                         "основной путь), coco = keypoints3d_optim (прежний путь пробы)")
+    ap.add_argument("--src", default="data/aist/extracted/keypoints3d",
+                    help="каталог keypoints3d (для --source coco)")
+    ap.add_argument("--src-smpl", default="data/aist/extracted/motions",
+                    help="каталог motions pkl (для --source smpl)")
+    ap.add_argument("--smpl-model", default=DEFAULT_SMPL_MODEL,
+                    help="файл модели SMPL (нулевая форма)")
     ap.add_argument("--src2d", default="data/aist/extracted/keypoints2d",
                     help="каталог keypoints2d для <seq>.cams.json (следящий кадр, S21/T12)")
     ap.add_argument("--out", default="data/derived/trial")
@@ -151,32 +185,60 @@ def main():
 
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     src = args.src if os.path.isabs(args.src) else os.path.join(repo, args.src)
+    src_smpl = args.src_smpl if os.path.isabs(args.src_smpl) else os.path.join(repo, args.src_smpl)
+    smpl_model = args.smpl_model if os.path.isabs(args.smpl_model) else os.path.join(repo, args.smpl_model)
     src2d = args.src2d if os.path.isabs(args.src2d) else os.path.join(repo, args.src2d)
     out_dir = args.out if os.path.isabs(args.out) else os.path.join(repo, args.out)
-    pkl_path = os.path.join(src, args.seq + ".pkl")
-    if not os.path.isfile(pkl_path):
-        sys.exit(f"нет входного файла: {pkl_path}")
 
-    data = safe_pickle.load(pkl_path)
-    K = np.asarray(data["keypoints3d_optim"], dtype=np.float64)
-    total = len(K)
+    if args.source == "smpl":
+        motion_path = os.path.join(src_smpl, args.seq + ".pkl")
+        if not os.path.isfile(motion_path):
+            sys.exit(f"нет файла движений SMPL: {motion_path} "
+                     f"(для этой последовательности можно запустить с --source coco)")
+        if not os.path.isfile(smpl_model):
+            sys.exit(f"нет модели SMPL: {smpl_model}")
+        mo = safe_pickle.load(motion_path)
+        poses = np.asarray(mo["smpl_poses"], dtype=np.float64).reshape(-1, 24, 3)
+        trans = np.asarray(mo["smpl_trans"], dtype=np.float64)
+        scaling = float(np.asarray(mo["smpl_scaling"], dtype=np.float64).ravel()[0])
+        total = len(poses)
 
-    # ---- отбор кадров: ядро скелета + голова (уши, иначе нос) ----
-    core_ok = np.isfinite(K[:, CORE_POINTS]).all(axis=(1, 2))
-    ears_ok = np.isfinite(K[:, LEAR]).all(axis=1) & np.isfinite(K[:, REAR]).all(axis=1)
-    nose_ok = np.isfinite(K[:, NOSE]).all(axis=1)
-    head_pts = np.full((len(K), 3), np.nan)
-    head_pts[ears_ok] = (K[ears_ok, LEAR] + K[ears_ok, REAR]) / 2.0
-    head_pts[~ears_ok & nose_ok] = K[~ears_ok & nose_ok, NOSE]
-    head_ok = np.isfinite(head_pts).all(axis=1)
-    keep = core_ok & head_ok
-    idx = np.flatnonzero(keep)
-    n_nan = total - len(idx)
+        # ---- отбор кадров: NaN во вращениях/перемещении ----
+        ok = np.isfinite(poses.reshape(total, -1)).all(axis=1) & np.isfinite(trans).all(axis=1)
+        idx = np.flatnonzero(ok)
+        n_nan = total - len(idx)
 
-    P = K[keep]
-    H = head_pts[keep]
+        J, parents = smpl_fk.load_model(smpl_model)
+        W = smpl_fk.joints_world(J, parents, poses[idx], trans[idx], scaling)  # (n, 24, 3), см
+        P = np.zeros((len(idx), 17, 3))
+        P[:, 5:17] = W[:, SMPL_TO_COCO]       # lsho..rank из суставов SMPL
+        H = W[:, smpl_fk.HEAD]                # голова -- сустав head
+        root = W[:, smpl_fk.PELVIS]           # корень -- сустав pelvis (S12/Вариант A)
+    else:
+        pkl_path = os.path.join(src, args.seq + ".pkl")
+        if not os.path.isfile(pkl_path):
+            sys.exit(f"нет входного файла: {pkl_path}")
 
-    root = (P[:, LHIP] + P[:, RHIP]) / 2.0
+        data = safe_pickle.load(pkl_path)
+        K = np.asarray(data["keypoints3d_optim"], dtype=np.float64)
+        total = len(K)
+
+        # ---- отбор кадров: ядро скелета + голова (уши, иначе нос) ----
+        core_ok = np.isfinite(K[:, CORE_POINTS]).all(axis=(1, 2))
+        ears_ok = np.isfinite(K[:, LEAR]).all(axis=1) & np.isfinite(K[:, REAR]).all(axis=1)
+        nose_ok = np.isfinite(K[:, NOSE]).all(axis=1)
+        head_pts = np.full((len(K), 3), np.nan)
+        head_pts[ears_ok] = (K[ears_ok, LEAR] + K[ears_ok, REAR]) / 2.0
+        head_pts[~ears_ok & nose_ok] = K[~ears_ok & nose_ok, NOSE]
+        head_ok = np.isfinite(head_pts).all(axis=1)
+        keep = core_ok & head_ok
+        idx = np.flatnonzero(keep)
+        n_nan = total - len(idx)
+
+        P = K[keep]
+        H = head_pts[keep]
+
+        root = (P[:, LHIP] + P[:, RHIP]) / 2.0
     neck = (P[:, LSHO] + P[:, RSHO]) / 2.0
 
     # ---- длины костей (мировые, см); rotation сохраняет длину ----
@@ -249,6 +311,7 @@ def main():
 
     result = {
         "formatVersion": 1,
+        "source": args.source,
         "sequence": args.seq,
         "video": args.seq.replace("cAll", "c05") + ".mp4",
         "fps": 60,
@@ -273,7 +336,10 @@ def main():
 
     # ---- контрольные числа ----
     print(f"последовательность: {args.seq}")
-    print(f"кадров всего: {total}, пропущено (NaN/голова): {n_nan}, выведено: {len(frames)}")
+    print(f"источник: {args.source}"
+          + (f", smpl_scaling {scaling:.2f}" if args.source == "smpl" else ""))
+    skip_why = "NaN" if args.source == "smpl" else "NaN/голова"
+    print(f"кадров всего: {total}, пропущено ({skip_why}): {n_nan}, выведено: {len(frames)}")
     if floor_flag:
         print(f"пол: p2 лодыжек {floor_p2:.1f} см -> floor_y {floor_y:.1f} см{floor_flag}")
     else:
@@ -291,8 +357,8 @@ def main():
     print("--- санити ---")
     print(f"плечи выше бёдер в среднем на {sho_hip:.2f} см (ось y вверх): "
           + ("ок" if sho_hip > 0 else "ПРОВАЛ"))
-    print(f"кадр {d}: lhip.x - rhip.x = {K[d, LHIP, 0] - K[d, RHIP, 0]:+.2f}, "
-          f"lsho.x - rsho.x = {K[d, LSHO, 0] - K[d, RSHO, 0]:+.2f} "
+    print(f"кадр {d}: lhip.x - rhip.x = {P[0, LHIP, 0] - P[0, RHIP, 0]:+.2f}, "
+          f"lsho.x - rsho.x = {P[0, LSHO, 0] - P[0, RSHO, 0]:+.2f} "
           f"(x в сторону левого плеча: ожидался плюс)")
     for pair in (("uArmL", "uArmR"), ("lArmL", "lArmR"), ("thighL", "thighR"), ("shinL", "shinR")):
         ml, mr = np.median(lengths[pair[0]]), np.median(lengths[pair[1]])
