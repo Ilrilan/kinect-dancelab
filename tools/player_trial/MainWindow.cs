@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -20,7 +21,8 @@ namespace PlayerTrial
     /// <summary>
     /// Окно пробного плеера (specs/player/trial.md): слева видео эталонного танцора со звуком (MediaElement,
     /// часы пробы = Position), справа 3D-сцена двух призраков с HUD. Кольцо кнопок камер (S13) меняет ракурс
-    /// видео и камеры сцены призраков одной кнопкой (S19). Управление: Space пауза/плей, R рестарт с нуля.
+    /// видео и камеры сцены призраков одной кнопкой (S19). Управление: Space пауза/плей (пауза — режим
+    /// подгонки позы, S22: эталон застыл, живая подсветка и мгновенный процент позы), R рестарт с нуля.
     /// Код-построенный UI по образцу tools/sensor_view.
     /// </summary>
     internal sealed class MainWindow : Window
@@ -116,6 +118,9 @@ namespace PlayerTrial
         private readonly GhostCanvas ghost = new GhostCanvas();
         private readonly Grid views = new Grid();
         private readonly Grid sceneView = new Grid { Visibility = Visibility.Collapsed };
+
+        // строка «поза: NN%» в HUD паузы (S22): на 6 пунктов крупнее обычных строк (базовый FontSize 15)
+        private const double PoseLineFontSize = 21.0;
         private readonly TextBlock hud = new TextBlock
         {
             Foreground = Text,
@@ -145,6 +150,9 @@ namespace PlayerTrial
         private double smoothedCenterV = double.NaN;
         private double smoothedPanX;
         private double smoothedPanY;
+        // пробные пороги оценки (DeadZone 0.35, Saturation 1.0, MinCoverageBones 4): один экземпляр
+        // и для скорера, и для гейта подсветки/процента позы — значения не расходятся
+        private readonly TrialParams trialParams = new TrialParams();
         private TrialScorer? scorer;
         private TrialScore? lastScore;
         private PlayerSession? session;
@@ -157,6 +165,8 @@ namespace PlayerTrial
         private int tick;
         private double lastScoredT = double.NaN;
         private DateTime? lastUserSeen;
+        private double livePose01;   // мгновенный процент позы для HUD паузы (S22), пересчёт каждый кадр
+        private bool livePoseValid;  // гейт покрытия для «поза: NN%» (T14/P0.4): ниже — «поза: —»
         private GhostLengths ghostLen = GhostLengths.FromLeg(0.8);
 
         // калибровка: медианы длин костей по первым секундам живого скелета, потом фиксированы
@@ -432,7 +442,7 @@ namespace PlayerTrial
             try
             {
                 track = CanonicalTrack.Load(canonicalPath);
-                scorer = new TrialScorer(track, new TrialParams());
+                scorer = new TrialScorer(track, trialParams);
                 ghostLen = GhostLengths.FromLeg(track.LegLengthM);
                 ghost.SetLengths(ghostLen);
             }
@@ -707,27 +717,28 @@ namespace PlayerTrial
             videoPan.Y = smoothedPanY;
         }
 
-        /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг.</summary>
+        /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг,
+        /// краска костей с гейтом покрытия, мгновенный процент позы для паузы (S22).</summary>
         private void UpdateLive(double t)
         {
             var s = session;
             if (opts.NoSensor || s == null)
             {
-                ghost.SetUser(null, null);
+                ResetUserDisplay();
                 return;
             }
 
             var frame = s.Latest;
             if (frame == null || frame.Users.Count == 0)
             {
-                ghost.SetUser(null, null);
+                ResetUserDisplay();
                 return;
             }
 
             var userId = NearestUserId(frame, s.TrackerId);
             if (userId < 0 || !s.TryGetUser(userId, out var pose, out var lengths))
             {
-                ghost.SetUser(null, null);
+                ResetUserDisplay();
                 return;
             }
 
@@ -743,14 +754,49 @@ namespace PlayerTrial
                 lastScoredT = t;
             }
 
-            // краска костей: сравнение на применённом сдвиге скорера
+            // краска костей: сравнение на применённом сдвиге скорера; на паузе сдвиг заморожен
+            // (новый поиск не делается, S22) — эталон сэмплируется на застывший момент t - shift
             var shift = lastScore?.ShiftSec ?? 0;
             var comparison = TrialComparer.Compare(track!.Sample(t - shift), userFrame);
-            ghost.SetUser(userFrame, comparison.BoneDeviationRad);
+
+            // гейт подсветки (T14/P0.4, хвост E12): валидных костей меньше MinCoverageBones — кадр
+            // без краски, призрак пользователя остаётся нейтральным
+            var covered = CoverageOk(comparison);
+            ghost.SetUser(userFrame, covered ? comparison.BoneDeviationRad : null);
+
+            // мгновенный процент позы (S22): та же кривая мёртвой зоны/насыщения, что у скорера,
+            // но по текущему кадру без окна истории; живёт только для отображения в HUD паузы
+            livePose01 = PoseScore01(comparison.MeanDeviationRad);
+            livePoseValid = covered;
+
             if (comparison.Coverage > 0)
             {
                 lastUserSeen = DateTime.UtcNow;
             }
+        }
+
+        /// <summary>Пользователя нет: без призрака и без процента позы в HUD паузы.</summary>
+        private void ResetUserDisplay()
+        {
+            ghost.SetUser(null, null);
+            livePose01 = 0;
+            livePoseValid = false;
+        }
+
+        /// <summary>Гейт покрытия (T14/P0.4): валидных костей в сравнении не меньше MinCoverageBones.</summary>
+        private bool CoverageOk(TrialComparison comparison) =>
+            (int)Math.Round(comparison.Coverage * CanonicalFrame.BoneCount) >= trialParams.MinCoverageBones;
+
+        /// <summary>Кривая мёртвой зоны/насыщения скорера (TrialParams) на одном среднем отклонении:
+        /// 1 - clamp((clamp(mean, 0, Saturation) - DeadZone) / (Saturation - DeadZone), 0, 1) (S22).</summary>
+        private double PoseScore01(double meanDevRad)
+        {
+            var dead = trialParams.DeadZone;
+            var sat = trialParams.Saturation;
+            var span = Math.Max(sat - dead, 1e-9);
+            var clamped = Math.Max(0.0, Math.Min(meanDevRad, sat));
+            var x = Math.Max(0.0, Math.Min((clamped - dead) / span, 1.0));
+            return 1.0 - x;
         }
 
         /// <summary>Пока не откалибровано: копим длины костей реконструктора (раз на кадр); после CalibrationSeconds считаем медианы и фиксируем.</summary>
@@ -856,6 +902,21 @@ namespace PlayerTrial
             if (!seen || score == null)
             {
                 hud.Text = "не вижу" + Environment.NewLine + timeLine + Environment.NewLine + floorLine;
+                return;
+            }
+
+            if (paused)
+            {
+                // S22: пауза — режим подгонки позы. Бегущий процент заменён крупной строкой мгновенного
+                // процента позы по текущему кадру (сдвиг заморожен с момента паузы); ниже гейта покрытия —
+                // «поза: —». Остальные строки (итог, грубые, время, пол) остаются на замороженных значениях.
+                var poseText = livePoseValid ? (livePose01 * 100).ToString("0", inv) + "%" : "—";
+                hud.Inlines.Clear();
+                hud.Inlines.Add(new Run("поза: " + poseText + Environment.NewLine) { FontSize = PoseLineFontSize });
+                hud.Inlines.Add(new Run("Итог: " + (score.Total01 * 100).ToString("0", inv) + "%" + Environment.NewLine));
+                hud.Inlines.Add(new Run("Грубые: " + score.Errors.ToString(inv) + Environment.NewLine));
+                hud.Inlines.Add(new Run(timeLine + Environment.NewLine));
+                hud.Inlines.Add(new Run(floorLine));
                 return;
             }
 
@@ -1252,7 +1313,7 @@ namespace PlayerTrial
             lastScoredT = double.NaN;
             if (track != null)
             {
-                scorer = new TrialScorer(track, new TrialParams());
+                scorer = new TrialScorer(track, trialParams);
             }
 
             if (mediaOpened)
