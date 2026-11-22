@@ -186,6 +186,7 @@ namespace DanceLab.Core.Tests
             Assert.Equal(0.35, p.ShiftWindow, 10);
             Assert.Equal(0.1, p.ShiftRate, 10);
             Assert.Equal(3.0, p.RunningWindow, 10);
+            Assert.Equal(4, p.MinCoverageBones);
         }
 
         [Fact]
@@ -569,7 +570,7 @@ namespace DanceLab.Core.Tests
             new CanonicalTrack(60, 0.7111, new List<CanonicalFrame> { CanonSynth.Tilted(0.0) }, "static", null);
 
         [Fact]
-        public void ErrorCounterTriggersAboveThresholdAndGuardsByCoverage()
+        public void ErrorCounterCountsErrorEpisodesNotFrames()
         {
             var scorer = new TrialScorer(StaticTrack());
             var t = 0.0;
@@ -580,16 +581,69 @@ namespace DanceLab.Core.Tests
                 s = scorer.Update(t, CanonSynth.Tilted(1.0));
             }
 
-            // каждый момент выше порога даёт +1
-            Assert.Equal(5, s.Errors);
+            // непрерывная серия выше порога — один эпизод, одна ошибка (T14/P0.3, раньше +1 на кадр)
+            Assert.Equal(1, s.Errors);
 
-            // ниже порога счёт не растёт
-            Assert.Equal(5, scorer.Update(t += 1.0 / 30.0, CanonSynth.Tilted(0.5)).Errors);
+            // ниже порога счёт не растёт и эпизод закрывается
+            Assert.Equal(1, scorer.Update(t += 1.0 / 30.0, CanonSynth.Tilted(0.5)).Errors);
 
-            // большое отклонение при покрытии ниже половины не считается ошибкой
+            // после хорошей позы новая серия выше порога — вторая ошибка
+            for (var k = 0; k < 5; k++)
+            {
+                t += 1.0 / 30.0;
+                s = scorer.Update(t, CanonSynth.Tilted(1.0));
+            }
+
+            Assert.Equal(2, s.Errors);
+
+            // выше порога при покрытии ниже минимума: ошибку не добавляет и эпизод закрывает
             var low = scorer.Update(t += 1.0 / 30.0, CanonSynth.Tilted(1.0, 2));
-            Assert.Equal(5, low.Errors);
+            Assert.Equal(2, low.Errors);
             Assert.Equal(0.25, low.Coverage, 12);
+
+            // после закрытия эпизода покрытием очередная плохая серия — третья ошибка
+            var next = scorer.Update(t += 1.0 / 30.0, CanonSynth.Tilted(1.0));
+            Assert.Equal(3, next.Errors);
+        }
+
+        /// <summary>T14/P0.3: две секунды плохой позы (60 кадров при 30 кадр/с) — одна ошибка, не 60.</summary>
+        [Fact]
+        public void SixtyBadFramesCountAsOneError()
+        {
+            var scorer = new TrialScorer(StaticTrack());
+            TrialScore s = null!;
+            for (var k = 1; k <= 60; k++)
+            {
+                s = scorer.Update(k / 30.0, CanonSynth.Tilted(1.0));
+            }
+
+            Assert.Equal(1, s.Errors);
+        }
+
+        /// <summary>T14/P0.4: 3 валидные кости ниже MinCoverageBones — кадр непокрытый: без оценки и ошибок, покрытие наружу фактическое.</summary>
+        [Fact]
+        public void ThreeValidBonesBelowMinCoverageGiveNoScoreOrErrors()
+        {
+            var scorer = new TrialScorer(StaticTrack());
+            var s = scorer.Update(1.0 / 30.0, CanonSynth.Tilted(1.0, 3));
+            Assert.Equal(0, s.Errors);
+            Assert.Equal(0.0, s.Total01, 12);
+            Assert.Equal(0.0, s.Running01, 12);
+            Assert.Equal(3.0 / 8.0, s.Coverage, 12);
+        }
+
+        /// <summary>T14/P0.4: ровно 4 валидные кости — кадр покрыт: оценка пишется, ошибка считается.</summary>
+        [Fact]
+        public void FourValidBonesAtMinCoverageScoreAndCountErrors()
+        {
+            var scorer = new TrialScorer(StaticTrack());
+            var bad = scorer.Update(1.0 / 30.0, CanonSynth.Tilted(1.0, 4));
+            Assert.Equal(1, bad.Errors);
+
+            var mid = scorer.Update(2.0 / 30.0, CanonSynth.Tilted(0.55, 4));
+            Assert.Equal(1, mid.Errors);
+            Assert.True(mid.Total01 > 0.3, "Total01=" + mid.Total01.ToString("0.000"));
+            Assert.Equal(0.5, mid.Coverage, 12);
         }
 
         [Fact]

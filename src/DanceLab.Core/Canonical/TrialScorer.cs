@@ -23,6 +23,9 @@ namespace DanceLab.Core.Canonical
 
         /// <summary>Окно бегущего процента, секунды.</summary>
         public double RunningWindow { get; set; } = 3.0;
+
+        /// <summary>Минимальное число костей в сравнении для оценки и счётчика ошибок (T14/P0.4): ниже кадр непокрыт, как при Coverage 0.</summary>
+        public int MinCoverageBones { get; set; } = 4;
     }
 
     /// <summary>Снимок оценки на момент Update (player/trial S5).</summary>
@@ -43,7 +46,7 @@ namespace DanceLab.Core.Canonical
         /// <summary>Накопленный итог с начала трека, от 0 до 1.</summary>
         public double Total01 { get; }
 
-        /// <summary>Счётчик грубых ошибок (trial S5): моменты со средним отклонением выше ErrorThreshold при покрытии выше половины.</summary>
+        /// <summary>Счётчик грубых ошибок-эпизодов (trial S5; T14/P0.3): одна непрерывная серия кадров со средним отклонением выше ErrorThreshold при покрытии не ниже MinCoverageBones считается одной ошибкой.</summary>
         public int Errors { get; }
 
         /// <summary>Покрытие последнего сравнения: доля костей, участвовавших в сравнении.</summary>
@@ -58,7 +61,10 @@ namespace DanceLab.Core.Canonical
     /// человека, Update вызывается по порядку времени по часам видео. Лучший сдвиг ищется на каждом шаге
     /// по сетке в окне ±ShiftWindow; применённый сдвиг следует за лучшим не быстрее ShiftRate. Мёртвая зона
     /// и насыщение переводят среднее отклонение в оценку от 0 до 1; грубые ошибки считаются по среднему
-    /// без мёртвой зоны. Кадры без сравнения (покрытие 0) ошибок не дают и в оценку не попадают.
+    /// без мёртвой зоны. Кадры, где в сравнении меньше MinCoverageBones костей (в том числе покрытие 0),
+    /// считаются непокрытыми: ошибок не дают и в оценку не попадают. Ошибки дебаунсятся (T14/P0.3):
+    /// +1 только при переходе в эпизод выше порога, эпизод закрывается падением среднего ниже ErrorThreshold
+    /// или провалом покрытия.
     /// </summary>
     public sealed class TrialScorer
     {
@@ -72,6 +78,7 @@ namespace DanceLab.Core.Canonical
         private double totalSum;
         private int totalN;
         private int errors;
+        private bool errorEpisode;
         private double lastT = double.NaN;
 
         public TrialScorer(CanonicalTrack reference, TrialParams? parameters = null)
@@ -125,7 +132,12 @@ namespace DanceLab.Core.Canonical
             var effective = Math.Max(0, Math.Min(comparison.MeanDeviationRad, p.Saturation) - p.DeadZone);
             var span = Math.Max(p.Saturation - p.DeadZone, 1e-9);
             var score = 1.0 - (effective / span);
-            if (comparison.Coverage > 0)
+
+            // порог покрытия (T14/P0.4): костей в сравнении меньше минимума — кадр непокрытый,
+            // как при Coverage 0: без оценки и без ошибок; Coverage наружу отдаётся фактический
+            var comparedBones = (int)Math.Round(comparison.Coverage * CanonicalFrame.BoneCount);
+            var covered = comparedBones >= p.MinCoverageBones;
+            if (covered)
             {
                 history.Add((tSec, score));
                 totalSum += score;
@@ -136,9 +148,19 @@ namespace DanceLab.Core.Canonical
                 }
             }
 
-            if (comparison.MeanDeviationRad > p.ErrorThreshold && comparison.Coverage > 0.5)
+            // дебаунс ошибок (T14/P0.3): +1 только на переходе в эпизод выше порога;
+            // эпизод закрывается падением среднего ниже ErrorThreshold или провалом покрытия
+            if (comparison.MeanDeviationRad > p.ErrorThreshold && covered)
             {
-                errors++;
+                if (!errorEpisode)
+                {
+                    errors++;
+                    errorEpisode = true;
+                }
+            }
+            else
+            {
+                errorEpisode = false;
             }
 
             var running = 0.0;
