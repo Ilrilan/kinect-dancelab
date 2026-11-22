@@ -48,13 +48,15 @@ def main():
     BA = np.array([[fa[t]["bones"][k] for k in BONES] for t in common])  # (n, 8, 3)
     BB = np.array([[fb[t]["bones"][k] for k in BONES] for t in common])
     ang = ang_deg(BA, BB)  # (n, 8)
-    print("\nнаправления костей, градусы (угол между векторами A и B):")
-    print(f"  {'кость':8s} {'среднее':>8s} {'макс':>8s} {'p95':>8s}")
+    print("\nнаправления костей (угол между векторами A и B), радианы и градусы:")
+    print(f"  {'кость':8s} {'ср,рад':>8s} {'макс,рад':>9s} {'ср,°':>7s} {'макс,°':>7s} {'p95,°':>7s}")
     for j, name in enumerate(BONES):
-        print(f"  {name:8s} {ang[:, j].mean():8.2f} {ang[:, j].max():8.2f} "
-              f"{np.percentile(ang[:, j], 95):8.2f}")
-    print(f"  {'итого':8s} {ang.mean():8.2f} {ang.max():8.2f} "
-          f"{np.percentile(ang, 95):8.2f}")
+        print(f"  {name:8s} {np.radians(ang[:, j].mean()):8.4f} "
+              f"{np.radians(ang[:, j].max()):9.4f} "
+              f"{ang[:, j].mean():7.2f} {ang[:, j].max():7.2f} "
+              f"{np.percentile(ang[:, j], 95):7.2f}")
+    print(f"  {'итого':8s} {np.radians(ang.mean()):8.4f} {np.radians(ang.max()):9.4f} "
+          f"{ang.mean():7.2f} {ang.max():7.2f} {np.percentile(ang, 95):7.2f}")
 
     for key, label in (("forward", "forward"), ("side", "side"), ("height", "height")):
         d = np.abs([fa[t]["root"][key] - fb[t]["root"][key] for t in common])
