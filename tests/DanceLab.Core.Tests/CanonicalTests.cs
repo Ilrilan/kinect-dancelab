@@ -487,7 +487,8 @@ namespace DanceLab.Core.Tests
 
             var track = CanonicalTrack.Load(path);
             Assert.Equal(443, track.Frames.Count);
-            Assert.InRange(track.LegLengthM, 0.710, 0.713);
+            // SMPL-источник с T16; COCO давал 0.710-0.713
+            Assert.InRange(track.LegLengthM, 0.670, 0.690);
             Assert.InRange(track.Frames[track.Frames.Count - 1].TSec, 7.366, 7.368);
             for (var k = 0; k < track.Frames.Count; k++)
             {
