@@ -85,6 +85,12 @@ namespace PlayerTrial
         private readonly TextBlock speedLabel = new TextBlock { Foreground = Text, Text = "Скорость", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
         private readonly Slider speedSlider = new Slider { Width = 120, Minimum = 0.2, Maximum = 2.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock speedValue = new TextBlock { Foreground = Text, Text = "x1.0", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+
+        // регулятор кадра (S21, T11): единый зум видео (обрезка боков сцены: стен и камер) и сцены призраков,
+        // умолчание увеличенное; один слайдер меняет оба сразу (S19)
+        private readonly TextBlock zoomLabel = new TextBlock { Foreground = Text, Text = "Кадр", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
+        private readonly Slider zoomSlider = new Slider { Width = 120, Minimum = 1.0, Maximum = 3.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock zoomValue = new TextBlock { Foreground = Text, Text = "x1.6", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock countdownText = new TextBlock
         {
             Foreground = Text,
@@ -100,6 +106,7 @@ namespace PlayerTrial
         private readonly DispatcherTimer countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         private LiveRecorder? recorder;
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+        private readonly ScaleTransform videoZoom = new ScaleTransform(1.0, 1.0); // зум кадра видео (S21), ведёт слайдер «Кадр»
         private readonly MediaElement media = new MediaElement { Stretch = Stretch.Uniform, LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Close, ScrubbingEnabled = true };
         private readonly GhostCanvas ghost = new GhostCanvas();
         private readonly Grid views = new Grid();
@@ -237,7 +244,16 @@ namespace PlayerTrial
             restartButton.Click += (s, e) => RestartFromZero();
             attemptButton.Click += (s, e) => StartAttempt();
             speedSlider.ValueChanged += (s, e) => OnSpeedChanged();
+            zoomSlider.ValueChanged += (s, e) => OnZoomChanged();
             countdownTimer.Tick += (s, e) => CountdownTick();
+
+            // стартовый зум кадра (S21): --zoom либо умолчание слайдера 1.6 (ValueChanged на инициализатор не срабатывает)
+            if (opts.Zoom.HasValue)
+            {
+                zoomSlider.Value = opts.Zoom.Value;
+            }
+
+            OnZoomChanged();
 
             // метка танцора в центре кольца камер (S13); Ellipse полным именем: Path из Shapes конфликтует с System.IO
             var dancerDot = new System.Windows.Shapes.Ellipse { Width = 12, Height = 12, Fill = Text };
@@ -268,6 +284,9 @@ namespace PlayerTrial
             controls.Children.Add(speedLabel);
             controls.Children.Add(speedSlider);
             controls.Children.Add(speedValue);
+            controls.Children.Add(zoomLabel);
+            controls.Children.Add(zoomSlider);
+            controls.Children.Add(zoomValue);
             var bars = new StackPanel { Background = Panel };
             bars.Children.Add(bar);
             bars.Children.Add(controls);
@@ -312,7 +331,11 @@ namespace PlayerTrial
                 UpdatePlayButton();
             };
 
-            var videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10) };
+            // зум кадра видео (S21): ScaleTransform с центром в центре кадра; вылезшие края (белые стены,
+            // камеры студии) срезает панель — у Grid ClipToBounds по умолчанию false, включаем явно
+            media.RenderTransformOrigin = new Point(0.5, 0.5);
+            media.RenderTransform = videoZoom;
+            var videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10), ClipToBounds = true };
             videoPanel.Children.Add(media);
 
             var ghostPanel = new Grid { Margin = new Thickness(5, 0, 10, 10) };
@@ -982,6 +1005,29 @@ namespace PlayerTrial
             }
 
             fallbackClock.SetRate(v);
+        }
+
+        /// <summary>
+        /// Кадр (S21, S19): один слайдер зумит видео (ScaleTransform с центром в центре кадра, панель
+        /// срезает вылезшие стены и камеры) и сцену призраков (GhostCanvas.FrameZoom) одновременно.
+        /// </summary>
+        private void OnZoomChanged()
+        {
+            var v = Math.Round(zoomSlider.Value, 1);
+            if (v < 1.0)
+            {
+                v = 1.0;
+            }
+
+            if (v > 3.0)
+            {
+                v = 3.0;
+            }
+
+            zoomValue.Text = "x" + v.ToString("0.0", CultureInfo.InvariantCulture);
+            ghost.FrameZoom = v;
+            videoZoom.ScaleX = v;
+            videoZoom.ScaleY = v;
         }
 
         private void RestartFromZero()

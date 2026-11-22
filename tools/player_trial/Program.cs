@@ -30,6 +30,9 @@ namespace PlayerTrial
         /// <summary>Стартовый ракурс (S13): c01..c09, null — ракурс видео эталона (c05).</summary>
         public string? Camera { get; private set; }
 
+        /// <summary>Стартовый зум кадра (S21): 1.0..3.0, null — умолчание слайдера 1.6.</summary>
+        public double? Zoom { get; private set; }
+
         public bool NoSensor { get; private set; }
 
         public string? ShotPath { get; private set; }
@@ -67,6 +70,13 @@ namespace PlayerTrial
             }
 
             o.NoSensor = Array.IndexOf(args, "--no-sensor") >= 0;
+
+            // --zoom число (1.0..3.0): стартовый зум кадра (S21) без слайдера; вне диапазона — игнор
+            if (double.TryParse(Opt("--zoom"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var zoom) && zoom >= 1.0 && zoom <= 3.0)
+            {
+                o.Zoom = zoom;
+            }
+
             o.ShotPath = Opt("--shot");
             if (double.TryParse(Opt("--shot-after"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var after) && after > 0)
             {

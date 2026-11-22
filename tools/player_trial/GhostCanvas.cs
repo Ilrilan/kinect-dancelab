@@ -213,6 +213,13 @@ namespace PlayerTrial
         private const double SceneCenterYm = 0.9;
 
         /// <summary>
+        /// Якорь зума над полом (E9): доля длины ноги. 0 — неподвижная точка ровно на полу под
+        /// танцором; небольшой запас приподнимает кадр, чтобы голова с бейсболкой не резалась
+        /// верхом на зумах до 1.6.
+        /// </summary>
+        private const double FloorAnchorAboveFloorFrac = 0.0;
+
+        /// <summary>
         /// Азимут фронта сцены в мировых осях: мир призрака = оси датасета (heading абсолютный), а фронт,
         /// откуда смотрит фронтальная камера c05, — азимут ~180° (позиция c05 из setting7_1). Смещение
         /// подобрано сравнением проекции скелета с keypoints2d: без него все ракурсы перевёрнуты спереди/сзади.
@@ -228,6 +235,25 @@ namespace PlayerTrial
             set
             {
                 cameraYawRad = value;
+                InvalidateVisual();
+            }
+        }
+
+        private double frameZoom = 1.0;
+
+        /// <summary>
+        /// Зум кадра сцены призраков (S21): масштаб сцены умножается на FrameZoom (1.0..3.0); центр
+        /// масштабирования — пол под танцором (E9): точка (cx, экранная высота линии пола при
+        /// FrameZoom=1). Стопы, зелёная линия пола и стрелка не уходят за нижнюю кромку, фигура
+        /// растёт вверх от пола; на больших зумах может срезаться верх. Сетка и стрелка
+        /// масштабируются согласованно (рисуются той же проекцией), подпись панели не зумится.
+        /// </summary>
+        public double FrameZoom
+        {
+            get => frameZoom;
+            set
+            {
+                frameZoom = Math.Max(1.0, Math.Min(3.0, value));
                 InvalidateVisual();
             }
         }
@@ -271,10 +297,20 @@ namespace PlayerTrial
                 return;
             }
 
-            // масштаб и центр как в прежнем виде спереди: пол на 0.86h при yaw 0, фигура ~1.7 м на 3.2 м высоты
-            var scale = h / 3.2;
-            var cy = (h * 0.86) - (SceneCenterYm * scale);
+            // масштаб и центр как в прежнем виде спереди: пол на 0.86h при yaw 0, фигура ~1.7 м на 3.2 м высоты.
+            // Зум кадра (S21, E9): масштаб умножается на FrameZoom, неподвижная точка — пол под танцором:
+            // (cx, экранная высота линии пола при базовом масштабе FrameZoom=1). Стопы, зелёная линия
+            // пола и стрелка остаются у низа панели при любом зуме, фигура растёт вверх от пола;
+            // большие зумы могут срезать верх, край канвы срезает лишнее (ClipToBounds в конструкторе)
+            var baseScale = h / 3.2;
+            var leg = Math.Max(lengths.LegLength, 0.1);
+            var anchorYm = FloorAnchorAboveFloorFrac * leg; // лёгкий запас над полом (E9)
+            var anchorScreenY = (h * 0.86) - (anchorYm * baseScale); // якорь (пол) при базовом масштабе
             var cx = w / 2;
+            var scale = baseScale * FrameZoom;
+            // сдвиг камеры держит точку anchorYm мира на anchorScreenY при любом масштабе; при FrameZoom=1
+            // сворачивается к прежней формуле 0.86h - SceneCenterYm*baseScale (zoom 100 = прежний кадр)
+            var cy = anchorScreenY - ((SceneCenterYm - anchorYm) * scale);
             DrawFloor(dc, w, h, cx, cy, scale);
             if (reference != null)
             {
