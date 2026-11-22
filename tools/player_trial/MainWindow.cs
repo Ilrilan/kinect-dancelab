@@ -905,10 +905,12 @@ namespace PlayerTrial
             }
 
             var seen = lastUserSeen.HasValue && (DateTime.UtcNow - lastUserSeen.Value).TotalSeconds <= 1.0;
+            var legLine = LegHudLine(inv, seen); // T18: статус калибровки ног, только при видимом пользователе
             var score = lastScore;
             if (!seen || score == null)
             {
-                hud.Text = "не вижу" + Environment.NewLine + timeLine + Environment.NewLine + floorLine;
+                hud.Text = "не вижу" + Environment.NewLine + timeLine + Environment.NewLine + floorLine
+                    + (legLine == null ? "" : Environment.NewLine + legLine);
                 return;
             }
 
@@ -924,13 +926,55 @@ namespace PlayerTrial
                 hud.Inlines.Add(new Run("Грубые: " + score.Errors.ToString(inv) + Environment.NewLine));
                 hud.Inlines.Add(new Run(timeLine + Environment.NewLine));
                 hud.Inlines.Add(new Run(floorLine));
+                if (legLine != null)
+                {
+                    hud.Inlines.Add(new Run(Environment.NewLine + legLine));
+                }
+
                 return;
             }
 
             hud.Text = "Бегущий: " + (score.Running01 * 100).ToString("0", inv) + "%   Итог: " + (score.Total01 * 100).ToString("0", inv) + "%" + Environment.NewLine
                 + "Грубые: " + score.Errors.ToString(inv) + "   Покрытие: " + (score.Coverage * 100).ToString("0", inv) + "%" + Environment.NewLine
                 + "Сдвиг: " + score.ShiftSec.ToString("0.00", inv) + " с   " + timeLine + Environment.NewLine
-                + floorLine;
+                + floorLine
+                + (legLine == null ? "" : Environment.NewLine + legLine);
+        }
+
+        /// <summary>Статус калибровки длин ног в HUD (T18, аудит P1.7): сенсор жив и пользователь виден —
+        /// пока !calibrated строка «нога: калибрую N с» (N = прошло из CalibrationSeconds по calibStart;
+        /// перезапуск вырожденного окна сбрасывает calibStart — счёт снова с нуля), после —
+        /// «нога: X.XX м, готово» (userLegM, фактически откалиброванная длина ноги).
+        /// Без сенсора или без видимого пользователя строки нет.</summary>
+        private string? LegHudLine(CultureInfo inv, bool seen)
+        {
+            if (opts.NoSensor || session == null || !seen)
+            {
+                return null;
+            }
+
+            if (!calibrated)
+            {
+                if (!calibStart.HasValue)
+                {
+                    return null;
+                }
+
+                var elapsed = (int)(DateTime.UtcNow - calibStart.Value).TotalSeconds;
+                if (elapsed < 0)
+                {
+                    elapsed = 0;
+                }
+
+                if (elapsed > (int)CalibrationSeconds)
+                {
+                    elapsed = (int)CalibrationSeconds;
+                }
+
+                return "нога: калибрую " + elapsed.ToString(inv) + " с";
+            }
+
+            return "нога: " + userLegM.ToString("0.00", inv) + " м, готово";
         }
 
         /// <summary>Пол сцены (S15): за кадр — минимум высот валидных лодыжек ближайшего пользователя, окно до 300 значений.</summary>
