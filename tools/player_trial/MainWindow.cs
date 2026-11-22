@@ -183,18 +183,10 @@ namespace PlayerTrial
 
         private CanonicalTrack? track;
 
-        // следящий кадр (S21, T12): <seq>.cams.json — камера -> кадры [t, u, v, uMin, vMin, uMax, vMax]:
-        // root (u,v) и bbox танцора в пикселях кадра, t в секундах
-        private const double AutoZoomFallback = 1.6; // база авто-зума без cams.json (прежнее умолчание)
-        private const double BboxWindowSec = 0.7;    // расширение bbox по времени (гладкость, без пампинга на махах)
-        private const double ShoePadRows = 75.0;     // обувь ниже лодыжек-ключевых точек, строк источника (худший кадр c05: выпад ~66)
-        private const double HeadShiftFrac = 0.07;   // сдвиг центра окна вверх (запас голове), доли высоты окна
-        private readonly Dictionary<string, double[][]> camRoot = new Dictionary<string, double[][]>();
-        private double smoothedZoomAuto = AutoZoomFallback;
-        private double smoothedCenterU = double.NaN;
-        private double smoothedCenterV = double.NaN;
-        private double smoothedPanX;
-        private double smoothedPanY;
+        // следящий кадр (S21, T12 → T22, аудит P2.12): логика авто-кадра/панорамы и данные
+        // <seq>.cams.json (камера → CamTrack: root/bbox по t) вынесены в DanceLab.View.FrameFollower;
+        // окно на тике кормит его числами окна/видео/слайдера и применяет итог к трансформам
+        private FrameFollower follower = new FrameFollower(new Dictionary<string, CamTrack>());
         // пробные пороги оценки (DeadZone 0.35, Saturation 1.0, MinCoverageBones 4): один экземпляр
         // и для скорера, и для гейта подсветки/процента позы — значения не расходятся
         private readonly TrialParams trialParams = new TrialParams();
@@ -538,7 +530,7 @@ namespace PlayerTrial
             }
 
             // следящий кадр (S21, T12): пиксели корня танцора по камерам, рядом с canonical.json
-            LoadCamRoot(Path.Combine(Path.GetDirectoryName(canonicalPath)!, opts.Seq + ".cams.json"));
+            follower = new FrameFollower(LoadCamRoot(Path.Combine(Path.GetDirectoryName(canonicalPath)!, opts.Seq + ".cams.json")));
 
             var videoPath = FindVideo(track?.Video);
             if (videoPath != null && opts.Camera != null)
@@ -619,11 +611,12 @@ namespace PlayerTrial
         /// <summary>
         /// Читает <seq>.cams.json (следящий кадр, S21/T12): по камерам кадры {t, root:[u,v],
         /// bbox:[uMin,vMin,uMax,vMax]} с t в секундах. Нет файла/камеры — авто-кадр работает
-        /// в fallback (база 1.6, центр кадра).
+        /// в fallback (база 1.6, центр кадра). Возвращает словарь камер → CamTrack (T22):
+        /// разбор файла здесь, математика следящего кадра — в DanceLab.View.FrameFollower.
         /// </summary>
-        private void LoadCamRoot(string path)
+        private Dictionary<string, CamTrack> LoadCamRoot(string path)
         {
-            camRoot.Clear();
+            var cameras = new Dictionary<string, CamTrack>();
             try
             {
                 using var stream = File.OpenRead(path);
@@ -660,7 +653,7 @@ namespace PlayerTrial
 
                         if (list.Count > 0)
                         {
-                            camRoot[c.Name] = list.ToArray();
+                            cameras[c.Name] = new CamTrack(list.ToArray());
                         }
                     }
                 }
@@ -673,65 +666,15 @@ namespace PlayerTrial
             {
                 status.Text = "cams.json не загрузился: авто-кадр в fallback (" + ex.Message + ").";
             }
+
+            return cameras;
         }
 
         /// <summary>
-        /// Расширенный по времени bbox танцора: объединение bbox кадров текущей камеры в окне
-        /// t ± BboxWindowSec (гладкость без пампинга на махах); false, если данных нет.
-        /// </summary>
-        private bool TryGetAutoFrame(double t, out (double UMin, double VMin, double UMax, double VMax) box)
-        {
-            box = default;
-            if (!camRoot.TryGetValue(currentCamera ?? string.Empty, out var rows) || rows.Length == 0)
-            {
-                return false;
-            }
-
-            var lo = 0;
-            var hi = rows.Length;
-            while (lo < hi)
-            {
-                var mid = (lo + hi) / 2;
-                if (rows[mid][0] < t - BboxWindowSec)
-                {
-                    lo = mid + 1;
-                }
-                else
-                {
-                    hi = mid;
-                }
-            }
-
-            var uMin = double.MaxValue;
-            var vMin = double.MaxValue;
-            var uMax = double.MinValue;
-            var vMax = double.MinValue;
-            for (var i = lo; i < rows.Length && rows[i][0] <= t + BboxWindowSec; i++)
-            {
-                uMin = Math.Min(uMin, rows[i][3]);
-                vMin = Math.Min(vMin, rows[i][4]);
-                uMax = Math.Max(uMax, rows[i][5]);
-                vMax = Math.Max(vMax, rows[i][6]);
-            }
-
-            if (uMin > uMax)
-            {
-                return false; // в окне не оказалось ни одного кадра (берём fallback)
-            }
-
-            box = (uMin, vMin, uMax, vMax);
-            return true;
-        }
-
-        /// <summary>
-        /// Следящий кадр (S21, T12): авто-зум и панорама видео по bbox танцора из cams.json текущей
-        /// камеры. zAuto = clamp(min(winW/(bw+pad), winH/(bh+pad)), 1, 3), pad = 25% габарита:
-        /// вертикальный паддинг асимметричный (верхней кромке 40%, нижней 60%), низ bbox расширен
-        /// на ShoePadRows строк (обувь ниже лодыжек-ключевых точек), окно панели в пикселях
-        /// источника = win/(s); итог z = zAuto * слайдер (сглаженные 0.2/тик). Окно центрируется
-        /// на сглаженном центре паддингованного bbox со сдвигом вверх 7% высоты окна (запас голове):
-        /// Tx = -z*s*(cu - W/2), Ty = -z*s*(cv_цель - H/2). Клампы панорамы: окно не выходит за края
-        /// контента. Нет cams.json — fallback: база zAuto = 1.6, центр = центр кадра (панорамы нет).
+        /// Следящий кадр (S21, T12 → T22): авто-зум и панорама видео по bbox танцора из cams.json
+        /// текущей камеры. Математика (формулы zAuto/Tx/Ty, клампы, сглаживание 0.2, окно ±0.7 с,
+        /// fallback 1.6) — в DanceLab.View.FrameFollower; окно только проверяет готовность видео,
+        /// кормит числами и применяет итог к трансформам.
         /// </summary>
         private void UpdateVideoFrame(double t)
         {
@@ -740,69 +683,19 @@ namespace PlayerTrial
             if (!videoOk || !mediaOpened || media.NaturalVideoWidth <= 0 ||
                     media.ActualWidth < 10 || media.ActualHeight < 10 || winH < 10)
             {
-                smoothedPanX = 0;
-                smoothedPanY = 0;
-                smoothedZoomAuto = AutoZoomFallback * sliderZoom;
+                follower.Reset(sliderZoom);
                 videoPan.X = 0;
                 videoPan.Y = 0;
                 return;
             }
 
-            var wSrc = (double)media.NaturalVideoWidth;
-            var hSrc = (double)media.NaturalVideoHeight;
-            var s = Math.Min(media.ActualWidth / wSrc, media.ActualHeight / hSrc); // контент в пикселях элемента
-            var winW = media.ActualWidth; // панель ширины контента (медиа заполняет окно по ширине)
-
-            // авто-кадр: расширенный bbox, цель зума по габариту танцора с запасом pad = 25%
-            var hasBox = TryGetAutoFrame(t, out var box);
-            double zAutoTarget;
-            double cUTarget;
-            double cVTarget;
-            if (hasBox)
-            {
-                var vMin = box.VMin;
-                var vMax = box.VMax + ShoePadRows; // bbox по лодыжкам: обувь ниже, расширяем низ
-                var bw = (box.UMax - box.UMin) * 1.25;                    // паддинг 25%: по половине на борт
-                var bh = (vMax - vMin) * 1.25;                            // сверху 40% паддинга, снизу 60%
-                zAutoTarget = Math.Max(1.0, Math.Min(3.0, Math.Min((winW / s) / bw, (winH / s) / bh)));
-                cUTarget = (box.UMin + box.UMax) / 2.0;
-                // центр паддингованного бокса: [vMin-0.4p, vMax+0.6p] -> центр = центр bbox + 0.1*p
-                cVTarget = (vMin + vMax) / 2.0 + (0.10 * 0.25 * (vMax - vMin));
-            }
-            else
-            {
-                zAutoTarget = AutoZoomFallback;
-                cUTarget = wSrc / 2.0;
-                cVTarget = hSrc / 2.0;
-            }
-
-            if (double.IsNaN(smoothedCenterU))
-            {
-                smoothedCenterU = cUTarget; // первый валидный тик: без проползания из нуля
-                smoothedCenterV = cVTarget;
-            }
-            else
-            {
-                smoothedCenterU += 0.2 * (cUTarget - smoothedCenterU);
-                smoothedCenterV += 0.2 * (cVTarget - smoothedCenterV);
-            }
-
-            smoothedZoomAuto += 0.2 * (zAutoTarget - smoothedZoomAuto);
-            var z = Math.Max(1.0, Math.Min(3.0, smoothedZoomAuto * sliderZoom));
-            videoZoom.ScaleX = z;
-            videoZoom.ScaleY = z;
-
-            // панорама: окно центрируется на паддингованном bbox со сдвигом вверх 7% высоты окна
-            var maxPanX = Math.Max(0.0, ((z * s * wSrc) - winW) / 2.0);
-            var maxPanY = Math.Max(0.0, ((z * s * hSrc) - winH) / 2.0);
-            var vTarget = smoothedCenterV - (HeadShiftFrac * winH / (s * z));
-            var targetX = Math.Max(-maxPanX, Math.Min(maxPanX, -z * s * (smoothedCenterU - (wSrc / 2.0))));
-            var targetY = Math.Max(-maxPanY, Math.Min(maxPanY, -z * s * (vTarget - (hSrc / 2.0))));
-
-            smoothedPanX += 0.2 * (targetX - smoothedPanX);
-            smoothedPanY += 0.2 * (targetY - smoothedPanY);
-            videoPan.X = smoothedPanX;
-            videoPan.Y = smoothedPanY;
+            var frame = follower.Update(t, currentCamera,
+                media.ActualWidth, winH,
+                media.NaturalVideoWidth, media.NaturalVideoHeight, sliderZoom);
+            videoZoom.ScaleX = frame.Zoom;
+            videoZoom.ScaleY = frame.Zoom;
+            videoPan.X = frame.PanX;
+            videoPan.Y = frame.PanY;
         }
 
         /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг,
