@@ -37,6 +37,9 @@ namespace PlayerTrial
 
         public string? ShotPath { get; private set; }
 
+        /// <summary>Регрессионный сценарий за один запуск окна (T23, аудит P2.13): сейчас только media.</summary>
+        public string? Regress { get; private set; }
+
         public double ShotAfterSec { get; private set; } = 8;
 
         public static Options Parse(string[] args)
@@ -81,6 +84,13 @@ namespace PlayerTrial
             if (double.TryParse(Opt("--shot-after"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var after) && after > 0)
             {
                 o.ShotAfterSec = after;
+            }
+
+            // --regress media (T23): сценарий медиа-quirks за один запуск окна (лог + скриншот в data/preview)
+            var regress = Opt("--regress");
+            if (regress == "media")
+            {
+                o.Regress = regress;
             }
 
             return o;

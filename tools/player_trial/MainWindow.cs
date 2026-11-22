@@ -573,6 +573,13 @@ namespace PlayerTrial
                 status.Text = "Идёт проба: " + opts.Seq + ", без сенсора (--no-sensor). Space: пауза/плей, R: рестарт.";
             }
 
+            // регрессионный сценарий медиа-quirks (T23): закрытие окна в конце сценария,
+            // поэтому раньше --shot (одновременно их не задают)
+            if (opts.Regress == "media")
+            {
+                await RunMediaRegression();
+            }
+
             await ShotIfRequested();
         }
 
@@ -1197,7 +1204,8 @@ namespace PlayerTrial
             if (paused)
             {
                 // после MediaEnded Play() продолжает с конца и сразу кончается: начинаем с нуля
-                if (media.NaturalDuration.HasTimeSpan && media.Position >= media.NaturalDuration.TimeSpan - TimeSpan.FromMilliseconds(200))
+                // (порог и сравнение с NaturalDuration — в MediaQuirks.IsAtEnd, T23)
+                if (MediaQuirks.IsAtEnd(media.Position, media.NaturalDuration))
                 {
                     RestartFromZero();
                     return;
@@ -1811,6 +1819,13 @@ namespace PlayerTrial
 
             await Task.Delay(TimeSpan.FromSeconds(opts.ShotAfterSec));
             var full = Path.IsPathRooted(shot) ? shot : Path.Combine(RepoRoot(), shot);
+            SavePng(full);
+            Close();
+        }
+
+        /// <summary>Рендер содержимого окна в PNG (используется --shot и --regress media).</summary>
+        private void SavePng(string full)
+        {
             var dir = Path.GetDirectoryName(full);
             if (!string.IsNullOrEmpty(dir))
             {
@@ -1826,8 +1841,167 @@ namespace PlayerTrial
             {
                 enc.Save(fs);
             }
+        }
 
+        /// <summary>
+        /// Регрессионный сценарий медиа-quirks MediaElement (T23, аудит P2.13, --regress media), один запуск
+        /// окна: старт (R с нуля, чтобы конец трека не наступил посреди сценария) → пауза Space на 1.5 с →
+        /// плей → скорость 2.0 слайдером на 1 с (два замера позиции против замера при 1.0) → обратно 1.0 →
+        /// R-рестарт → конец трека (MediaEnded) → Space на конце (quirk: Play с конца — должен рестартовать
+        /// с нуля, ветка TogglePlay) → 1 с → Space (пауза) → скриншот data/preview/trial-regress-media.png.
+        /// Каждый шаг пишет в лог data/preview/trial-regress-media.log позицию и paused; утверждения —
+        /// позиция &lt; 1 с после каждого рестарта и после Space на конце, скорость x2 по двум замерам —
+        /// дают PASS/FAIL в лог и статус. Клавиши идут по реальному пути обработки окна
+        /// (RaiseEvent PreviewKeyDown), слайдер — программно. Выход: exit 0, вердикт — в логе и статусе.
+        /// </summary>
+        private async Task RunMediaRegression()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var log = new List<string>();
+            var failures = new List<string>();
+            void Say(string line) => log.Add("[" + DateTime.Now.ToString("HH:mm:ss.fff", inv) + "] " + line);
+            void Assert(bool ok, string name, string detail)
+            {
+                Say("ASSERT " + name + ": " + (ok ? "PASS" : "FAIL") + " (" + detail + ")");
+                if (!ok)
+                {
+                    failures.Add(name + " (" + detail + ")");
+                }
+            }
+
+            Say("regress media: старт (seq=" + opts.Seq + ", no-sensor=" + opts.NoSensor + ")");
+            try
+            {
+                // старт: открыть видео и рестарт с нуля — известное исходное состояние (позиция 0, идёт)
+                var opened = await WaitFor(() => mediaOpened, TimeSpan.FromSeconds(15));
+                Assert(opened, "видео открылось", opened ? "mediaOpened=True, duration=" + Dur() : "таймаут 15 с, mediaOpened=False");
+                SendKey(Key.R);
+                await Task.Delay(300);
+                Say("шаг=старт(R) pos=" + Pos() + "s paused=" + paused + " duration=" + Dur());
+                Assert(media.Position.TotalSeconds < 1.0, "после старт-R позиция<1с", "pos=" + Pos() + "s");
+
+                // пауза Space на 1.5 с
+                SendKey(Key.Space);
+                await Task.Delay(200);
+                var pausedBySpace = paused;
+                await Task.Delay(1500);
+                Say("шаг=пауза(Space) pos=" + Pos() + "s paused=" + paused);
+                Assert(pausedBySpace, "Space ставит паузу", "paused=" + pausedBySpace);
+                Assert(media.Position.TotalSeconds >= 0.0 && paused, "позиция на паузе зафиксирована", "pos=" + Pos() + "s paused=" + paused);
+
+                // плей
+                SendKey(Key.Space);
+                await Task.Delay(300);
+                Say("шаг=плей(Space) pos=" + Pos() + "s paused=" + paused);
+                Assert(!paused, "Space снимает паузу", "paused=" + paused);
+
+                // замер 1: прирост позиции за 1 с при скорости 1.0
+                var a0 = media.Position.TotalSeconds;
+                await Task.Delay(1000);
+                var delta1 = media.Position.TotalSeconds - a0;
+                Say("замер1 скорость=1.0 delta=" + delta1.ToString("0.000", inv) + "s");
+
+                // скорость 2.0 (слайдер программно), замер 2 за ту же стеночную 1 с
+                speedSlider.Value = 2.0;
+                await Task.Delay(200);
+                Say("шаг=скорость2.0 SpeedRatio=" + media.SpeedRatio.ToString("0.0", inv));
+                var b0 = media.Position.TotalSeconds;
+                await Task.Delay(1000);
+                var delta2 = media.Position.TotalSeconds - b0;
+                Assert(media.SpeedRatio == 2.0, "SpeedRatio=2.0 на лету", "SpeedRatio=" + media.SpeedRatio.ToString("0.000", inv));
+                var ratio = delta1 > 0.05 ? delta2 / delta1 : double.NaN;
+                Assert(!double.IsNaN(ratio) && ratio >= 1.5 && ratio <= 2.5,
+                    "скорость x2 по двум замерам",
+                    "delta1=" + delta1.ToString("0.000", inv) + "s delta2=" + delta2.ToString("0.000", inv) + "s ratio=" + ratio.ToString("0.00", inv));
+                Say("шаг=скорость2.0-замер2 delta=" + delta2.ToString("0.000", inv) + "s ratio=" + ratio.ToString("0.00", inv));
+
+                // обратно 1.0
+                speedSlider.Value = 1.0;
+                await Task.Delay(200);
+                Say("шаг=скорость1.0 SpeedRatio=" + media.SpeedRatio.ToString("0.0", inv));
+                Assert(media.SpeedRatio == 1.0, "скорость вернулась к 1.0", "SpeedRatio=" + media.SpeedRatio.ToString("0.000", inv));
+
+                // R-рестарт
+                SendKey(Key.R);
+                await Task.Delay(300);
+                Say("шаг=рестарт(R) pos=" + Pos() + "s paused=" + paused);
+                Assert(media.Position.TotalSeconds < 1.0, "после R-рестарта позиция<1с", "pos=" + Pos() + "s");
+
+                // конец трека: MediaEnded ставит paused у конца
+                var ended = await WaitFor(() => paused && MediaQuirks.IsAtEnd(media.Position, media.NaturalDuration), TimeSpan.FromSeconds(20));
+                Say("шаг=конецТрека pos=" + Pos() + "s paused=" + paused + " duration=" + Dur());
+                Assert(ended, "MediaEnded наступил", ended ? "paused=True у конца" : "таймаут 20 с, paused=" + paused + " pos=" + Pos() + "s");
+
+                // Space на конце: quirk Play-с-конца — ветка TogglePlay должна рестартовать с нуля
+                SendKey(Key.Space);
+                await Task.Delay(300);
+                Say("шаг=Space-на-конце pos=" + Pos() + "s paused=" + paused);
+                Assert(media.Position.TotalSeconds < 1.0, "после MediaEnded+Space позиция<1с", "pos=" + Pos() + "s");
+
+                await Task.Delay(1000);
+                SendKey(Key.Space);
+                await Task.Delay(200);
+                Say("шаг=пауза-после-рестарта(Space) pos=" + Pos() + "s paused=" + paused);
+                Assert(paused, "финальный Space ставит паузу", "paused=" + paused);
+            }
+            catch (Exception ex)
+            {
+                Say("ASSERT сценарий упал: FAIL (" + ex.GetType().Name + ": " + ex.Message + ")");
+                failures.Add("исключение: " + ex.GetType().Name + ": " + ex.Message);
+            }
+
+            Say("RESULT: " + (failures.Count == 0 ? "PASS" : "FAIL: " + string.Join("; ", failures)));
+            status.Text = failures.Count == 0
+                ? "Регресс media: PASS."
+                : "Регресс media: FAIL — " + failures[0];
+            File.AppendAllLines(RepoPath("data/preview/trial-regress-media.log"), log);
+            SavePng(RepoPath("data/preview/trial-regress-media.png"));
             Close();
+        }
+
+        /// <summary>Ожидание условия с таймаутом (опрос раз в 100 мс); возвращает итоговую проверку.</summary>
+        private static async Task<bool> WaitFor(Func<bool> condition, TimeSpan timeout)
+        {
+            var until = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < until)
+            {
+                if (condition())
+                {
+                    return true;
+                }
+
+                await Task.Delay(100);
+            }
+
+            return condition();
+        }
+
+        /// <summary>Клавиша окну по реальному пути обработки: RaiseEvent PreviewKeyDown (обработчик Space/R).</summary>
+        private void SendKey(Key key) =>
+            RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this), 0, key)
+            {
+                RoutedEvent = Keyboard.PreviewKeyDownEvent,
+            });
+
+        /// <summary>Позиция видео в секундах для лога.</summary>
+        private string Pos() => media.Position.TotalSeconds.ToString("0.000", CultureInfo.InvariantCulture);
+
+        /// <summary>Длительность трека (NaturalDuration) для лога; без TimeSpan — «нет».</summary>
+        private string Dur() => media.NaturalDuration.HasTimeSpan
+            ? media.NaturalDuration.TimeSpan.TotalSeconds.ToString("0.00", CultureInfo.InvariantCulture)
+            : "нет";
+
+        /// <summary>Путь внутри репозитория с созданием каталога (лог и скриншот регресса).</summary>
+        private static string RepoPath(string rel)
+        {
+            var full = Path.IsPathRooted(rel) ? rel : Path.Combine(RepoRoot(), rel);
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+
+            return full;
         }
     }
 }

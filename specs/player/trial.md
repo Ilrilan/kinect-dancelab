@@ -101,7 +101,7 @@ Python (`tools/aist_import/canonical_export.py`):
 
 WPF (`tools/player_trial`, net48, WinExe, код-стиль sensor_view без XAML):
 
-- Аргументы: `--seq <имя>` (по умолчанию эталон пробы), `--tracker kinect|nuitrack|nuitrack-native|nuitrack-ai`, `--mode probe|scene` (стартовый режим), `--camera cXX` (стартовый ракурс, S13), `--zoom <1.0-3.0>` (стартовый кадр, S21), `--shot <png> [--shot-after сек]` (визуальная приёмка), `--no-sensor` (прогон эталона без сенсора).
+- Аргументы: `--seq <имя>` (по умолчанию эталон пробы), `--tracker kinect|nuitrack|nuitrack-native|nuitrack-ai`, `--mode probe|scene` (стартовый режим), `--camera cXX` (стартовый ракурс, S13), `--zoom <1.0-3.0>` (стартовый кадр, S21), `--regress media` (регрессионный сценарий медиа-quirks, T23), `--shot <png> [--shot-after сек]` (визуальная приёмка), `--no-sensor` (прогон эталона без сенсора).
 - Окно: слева видео (MediaElement, звук из дорожки видео), справа сцена с двумя призраками и HUD: бегущий процент, накопленный итог, счётчик грубых ошибок, покрытие, «не вижу».
 
 ### Изменения существующего API
@@ -170,4 +170,4 @@ WPF (`tools/player_trial`, net48, WinExe, код-стиль sensor_view без X
 - [x] T20 P1: финальный экран итогов трека: процент, ошибки, приглашение к реплею (аудит P1.9)
 - [x] T21 P2: вынос общего кода player_trial/sensor_view в общую библиотеку (SkeletonCanvas/GhostCanvas, LiveSession/PlayerSession, Topology) — дубль-копии осознанно делались для пробы (аудит P2.11)
 - [x] T22 P2: тестируемость UI-логики: авто-кадр/панорама/состояние камер вынести из MainWindow в тестируемый класс с юнит-тестами (аудит P2.12)
-- [ ] T23 P2: медиа-quirks MediaElement зафиксировать регрессионными сценариями (рестарт после конца, NaturalDuration, SpeedRatio на лету) (аудит P2.13)
+- [x] T23 P2: медиа-quirks MediaElement зафиксировать регрессионными сценариями (рестарт после конца, NaturalDuration, SpeedRatio на лету) (аудит P2.13)
