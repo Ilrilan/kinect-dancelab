@@ -23,7 +23,9 @@ namespace PlayerTrial
     /// часы пробы = Position), справа 3D-сцена двух призраков с HUD. Кольцо кнопок камер (S13) меняет ракурс
     /// видео и камеры сцены призраков одной кнопкой (S19). Управление: Space пауза/плей (пауза — режим
     /// подгонки позы, S22: эталон застыл, живая подсветка и мгновенный процент позы), R рестарт с нуля.
-    /// Код-построенный UI по образцу tools/sensor_view.
+    /// Сторож триала (T19): nuitrack-сессия умерла (нет скелета дольше 5 с) — авто-рестарт Stop->Start,
+    /// видео/оценка/эталон-призрак не останавливаются; калибровка ноги и пол сбрасываются только при
+    /// смене трекера. Код-построенный UI по образцу tools/sensor_view.
     /// </summary>
     internal sealed class MainWindow : Window
     {
@@ -159,6 +161,17 @@ namespace PlayerTrial
         private AppMode mode = AppMode.Probe;
         private bool busy;
         private bool wantRunning;
+
+        // сторож сессии Nuitrack-триала (T19, аудит P1.8): триальная лицензия убивает сессию
+        // каждые 3 минуты — скелетный поток замирает, призрак пользователя стоит
+        private const double TrialDeadFps = 0.5;          // поток мёртв: SkeletonFps ниже порога
+        private const double TrialDeadSeconds = 5.0;      // сколько секунд поток мёртв до рестарта
+        private const double TrialStartupGraceSec = 20.0; // грейс на загрузку нейросети nuitrack-ai (Elapsed)
+        private const int TrialRestartLimit = 10;         // перезапусков подряд, дальше — вручную
+        private DateTime? trialDeadSince;                 // с какого момента скелетный поток мёртв
+        private int trialRestarts;                        // перезапуски за запуск окна, сброс ручным Стоп/Старт
+        private bool trialRestarting;                     // цикл Stop->Start идёт, сторож молчит
+        private bool trialRestartLimitHit;                // лимит достигнут, ждём ручного включения
         private bool paused;
         private bool mediaOpened;
         private bool videoOk;
@@ -507,6 +520,7 @@ namespace PlayerTrial
         private void OnTick()
         {
             tick++;
+            WatchTrialSession(); // сторож сессии nuitrack-триала (T19), работает в обоих режимах окна
             UpdateFloor(); // пол сцены (T17): FloorY Kinect приоритетен, сглаживание 0.3 на тик
             if (tick % FloorRecalcTicks == 0)
             {
@@ -804,6 +818,35 @@ namespace PlayerTrial
             var clamped = Math.Max(0.0, Math.Min(meanDevRad, sat));
             var x = Math.Max(0.0, Math.Min((clamped - dead) / span, 1.0));
             return 1.0 - x;
+        }
+
+        /// <summary>Смена трекера сбрасывает калибровку ноги и оценку пола (T19): длины костей и лодыжки
+        /// переживают перезапуск сессии, но конвенции суставов и координат у трекеров разные. Авто-рестарт
+        /// сессии триала этот сброс НЕ вызывает.</summary>
+        private void ResetBodyCalibration()
+        {
+            calibrated = false;
+            calibStart = null;
+            lastCalibUs = -1;
+            userBones = null;
+            userLegM = 0;
+            calArmLU.Clear(); calArmLL.Clear(); calArmRU.Clear(); calArmRL.Clear();
+            calLegLU.Clear(); calLegLL.Clear(); calLegRU.Clear(); calLegRL.Clear();
+            lock (floorYSync)
+            {
+                rawFloorY = null;
+            }
+            floorAnkleHeights.Clear();
+            ankleReady = false;
+            ankleFloorYm = 0;
+            lastFloorSampleUs = -1;
+            floorSource = FloorSource.Estimating;
+            floorYm = 0;
+            if (track != null)
+            {
+                ghostLen = GhostLengths.FromLeg(track.LegLengthM);
+                ghost.SetLengths(ghostLen);
+            }
         }
 
         /// <summary>Пока не откалибровано: копим длины костей реконструктора (раз на кадр); после CalibrationSeconds считаем медианы и фиксируем.</summary>
@@ -1457,7 +1500,11 @@ namespace PlayerTrial
                 return;
             }
 
+            trialRestarts = 0; // смена трекера — новый отсчёт сторожа триала (T19)
+            trialRestartLimitHit = false;
+            trialDeadSince = null;
             await StopAsync();
+            ResetBodyCalibration(); // калибровка ноги и пол сбрасываются только при смене трекера (T19)
             await StartAsync();
         }
 
@@ -1468,6 +1515,10 @@ namespace PlayerTrial
                 return;
             }
 
+            // ручной Стоп/Старт сбрасывает сторож триала (T19): счётчик перезапусков, лимит, окно смерти
+            trialRestarts = 0;
+            trialRestartLimitHit = false;
+            trialDeadSince = null;
             if (wantRunning)
             {
                 wantRunning = false;
@@ -1515,6 +1566,87 @@ namespace PlayerTrial
             catch (Exception)
             {
                 return 0;
+            }
+        }
+
+        /// <summary>
+        /// Сторож сессии Nuitrack-триала (T19): триальная лицензия убивает сессию каждые 3 минуты —
+        /// скелетный поток замирает, призрак пользователя стоит. Только для nuitrack-трекеров
+        /// (SelectedKey содержит «nuitrack»): сессия запущена (wantRunning && session != null) и
+        /// SkeletonFps &lt; 0.5 дольше 5 с при Elapsed &gt; 20 с (грейс: нейросеть nuitrack-ai грузится
+        /// несколько секунд без кадров — старт смертью не считать). Kinect не трогается. Рестарт —
+        /// однократный цикл Stop-&gt;Start с паузой 1 с, не более 10 подряд (T19); калибровка ноги и пол
+        /// не сбрасываются, видео/оценка/эталон-призрак продолжают жить.
+        /// </summary>
+        private void WatchTrialSession()
+        {
+            if (trialRestarting || trialRestartLimitHit || busy || !wantRunning || session == null ||
+                    SelectedKey.IndexOf("nuitrack", StringComparison.Ordinal) < 0)
+            {
+                trialDeadSince = null;
+                return;
+            }
+
+            var s = session;
+            if (s.SkeletonFps >= TrialDeadFps || s.Elapsed.TotalSeconds <= TrialStartupGraceSec)
+            {
+                trialDeadSince = null; // поток жив либо ещё идёт стартовый грейс
+                return;
+            }
+
+            trialDeadSince ??= DateTime.UtcNow;
+            if ((DateTime.UtcNow - trialDeadSince.Value).TotalSeconds < TrialDeadSeconds)
+            {
+                return;
+            }
+
+            trialDeadSince = null;
+            trialRestarting = true;
+            trialRestarts++;
+            _ = RestartTrialSessionAsync(trialRestarts);
+        }
+
+        /// <summary>Авто-рестарт умершей сессии триала (T19): пауза 1 с, Stop-&gt;Start. Счётчик за запуск
+        /// окна; после лимита — сенсор остановлен и статус с приглашением включить вручную (ручной
+        /// Стоп/Старт сбрасывает счётчик и лимит). Калибровку ноги и пол цикл не трогает.</summary>
+        private async Task RestartTrialSessionAsync(int attempt)
+        {
+            try
+            {
+                if (busy || !wantRunning)
+                {
+                    return;
+                }
+
+                if (attempt > TrialRestartLimit)
+                {
+                    trialRestartLimitHit = true;
+                    wantRunning = false;
+                    await StopAsync();
+                    status.Text = "Nuitrack-триал: лимит перезапусков, включите сенсор вручную.";
+                    return;
+                }
+
+                status.Text = "Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ")";
+                await Task.Delay(TimeSpan.FromSeconds(1));
+                if (busy || !wantRunning)
+                {
+                    return; // за паузу вмешался ручной Стоп/Старт или смена трекера — не мешаем
+                }
+                await StopAsync();
+                await StartAsync();
+                if (session != null)
+                {
+                    status.Text = "Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ") выполнен.";
+                }
+            }
+            catch (Exception ex)
+            {
+                status.Text = "Nuitrack-триал: ошибка перезапуска: " + ex.Message;
+            }
+            finally
+            {
+                trialRestarting = false;
             }
         }
 
