@@ -96,9 +96,11 @@ namespace PlayerTrial
     }
 
     /// <summary>
-    /// Сцена призраков (вид спереди, x и y, как SkeletonCanvas Front в sensor_view): эталон-призрак фиксированным
-    /// полупрозрачным цветом и призрак пользователя с краской кости по отклонению (мёртвая зона TrialParams не красит,
-    /// дальше плавно к насыщению). Тело капсулами одним проходом OnRender, без WPF Shape на кадр.
+    /// Сцена призраков 3D (S18): мир поворачивается вокруг вертикали на -CameraYawRad матрицей 3x3, затем камера
+    /// на D метров на высоте центра сцены с перспективным делением f = D / (D + pz''); графический движок не используется.
+    /// Эталон-призрак фиксированным полупрозрачным цветом и призрак пользователя с краской кости по отклонению
+    /// (мёртвая зона TrialParams не красит, дальше плавно к насыщению). Тело капсулами одним проходом OnRender,
+    /// радиус капсулы умножается на f (глубина). Пол и сетка — линии пола 4x4 м в той же проекции.
     /// </summary>
     internal sealed class GhostCanvas : FrameworkElement
     {
@@ -119,10 +121,41 @@ namespace PlayerTrial
         /// <summary>Пробные пороги краски (TrialParams: мёртвая зона и насыщение, радиан).</summary>
         private static readonly TrialParams Paint = new TrialParams();
 
+        /// <summary>Расстояние камеры сцены, м (S18).</summary>
+        private const double CameraDistanceM = 4.0;
+
+        /// <summary>Высота центра сцены: камера смотрит на эту высоту, м.</summary>
+        private const double SceneCenterYm = 0.9;
+
+        /// <summary>
+        /// Азимут фронта сцены в мировых осях: мир призрака = оси датасета (heading абсолютный), а фронт,
+        /// откуда смотрит фронтальная камера c05, — азимут ~180° (позиция c05 из setting7_1). Смещение
+        /// подобрано сравнением проекции скелета с keypoints2d: без него все ракурсы перевёрнуты спереди/сзади.
+        /// </summary>
+        private const double StageFrontOffsetRad = Math.PI;
+
+        private double cameraYawRad;
+
+        /// <summary>Азимут камеры сцены (S18): радиан относительно фронта сцены; 0 — фронтальный вид (c05).</summary>
+        public double CameraYawRad
+        {
+            get => cameraYawRad;
+            set
+            {
+                cameraYawRad = value;
+                InvalidateVisual();
+            }
+        }
+
         private CanonicalFrame? reference;
         private CanonicalFrame? user;
         private double[]? userDeviation;
         private GhostLengths lengths = GhostLengths.FromLeg(0.8);
+
+        public GhostCanvas()
+        {
+            ClipToBounds = true;
+        }
 
         /// <summary>Длины костей для прямой кинематики обоих призраков (проба: одинаковые до калибровки).</summary>
         public void SetLengths(GhostLengths newLengths)
@@ -153,46 +186,79 @@ namespace PlayerTrial
                 return;
             }
 
-            // вид спереди как SkeletonCanvas Front: масштаб 3.2 м на высоту, пол у нижней кромки
+            // масштаб и центр как в прежнем виде спереди: пол на 0.86h при yaw 0, фигура ~1.7 м на 3.2 м высоты
             var scale = h / 3.2;
-            var floorY = h * 0.86;
+            var cy = (h * 0.86) - (SceneCenterYm * scale);
             var cx = w / 2;
-            DrawGrid(dc, w, h, cx, floorY, scale);
+            DrawFloor(dc, w, h, cx, cy, scale);
             if (reference != null)
             {
-                DrawGhost(dc, reference, ReferenceColor, null, 0.4, cx, floorY, scale);
+                DrawGhost(dc, reference, ReferenceColor, null, 0.4, cx, cy, scale);
             }
 
             if (user != null)
             {
-                DrawGhost(dc, user, UserBaseColor, userDeviation, 0.85, cx, floorY, scale);
+                DrawGhost(dc, user, UserBaseColor, userDeviation, 0.85, cx, cy, scale);
             }
         }
 
-        private void DrawGrid(DrawingContext dc, double w, double h, double cx, double floorY, double scale)
+        /// <summary>
+        /// Проекция точки мира (S18): поворот мира на -(yaw + фронт сцены) вокруг вертикали матрицей 3x3,
+        /// затем камера на D м: f = D / (D + pz''), экран x' = cx + px''·f·s, y' = cy - (py - центр)·f·s.
+        /// Без зеркала: вид призрака совпадает с ракурсом видео (сверено с keypoints2d по всем камерам).
+        /// </summary>
+        private Point Project(double x, double y, double z, double cx, double cy, double scale)
+        {
+            var th = cameraYawRad + StageFrontOffsetRad;
+            var c = Math.Cos(th);
+            var s = Math.Sin(th);
+            var px = (x * c) - (z * s);    // поворот мира на -тета
+            var pz = -((x * s) + (z * c)); // глубина после поворота: вперёд от камеры — минус
+            var f = CameraDistanceM / (CameraDistanceM + pz);
+            return new Point(cx + (px * f * scale), cy - ((y - SceneCenterYm) * f * scale));
+        }
+
+        /// <summary>Перспективный множитель f той же проекции по (x, z) — для радиуса капсулы и толщины линий.</summary>
+        private double DepthFactor(double x, double z)
+        {
+            var th = cameraYawRad + StageFrontOffsetRad;
+            var c = Math.Cos(th);
+            var s = Math.Sin(th);
+            return CameraDistanceM / (CameraDistanceM - ((x * s) + (z * c)));
+        }
+
+        /// <summary>Пол и сетка в 3D-проекции (S18): линии пола 4x4 м с шагом 1 м, повёрнутые yaw, с перспективой.</summary>
+        private void DrawFloor(DrawingContext dc, double w, double h, double cx, double cy, double scale)
         {
             for (var m = -2; m <= 2; m++)
             {
-                var x = cx + (m * scale);
-                dc.DrawLine(GridPen, new Point(x, 0), new Point(x, h));
+                if (m != 0)
+                {
+                    FloorLine(dc, m, -2, m, 2, GridPen, cx, cy, scale); // вдоль z на x = m
+                }
+
+                FloorLine(dc, -2, m, 2, m, GridPen, cx, cy, scale);     // вдоль x на z = m
             }
 
-            for (var m = 1; floorY - (m * scale) > 0; m++)
-            {
-                var y = floorY - (m * scale);
-                dc.DrawLine(GridPen, new Point(0, y), new Point(w, y));
-            }
-
-            dc.DrawLine(FloorPen, new Point(0, floorY), new Point(w, floorY));
-            Text(dc, "пол", 6, floorY - 16, 11, FloorPen.Brush);
+            // зелёная линия пола — ось x через центр сцены: при любом yaw f = 1, на высоте прежней линии пола
+            FloorLine(dc, -2, 0, 2, 0, FloorPen, cx, cy, scale);
+            var floorScreenY = cy + (SceneCenterYm * scale);
+            Text(dc, "пол", 6, floorScreenY - 16, 11, FloorPen.Brush);
 
             // подпись панели прижата к правому верхнему углу: слева её перекрывает HUD пробы
-            var title = MakeText("вид спереди (x, y), метки сетки 1 м", 13, LabelBrush);
+            var deg = (cameraYawRad * 180.0 / Math.PI).ToString("0", System.Globalization.CultureInfo.InvariantCulture);
+            var title = MakeText("сцена 3D (азимут " + deg + "°), сетка пола 1 м", 13, LabelBrush);
             dc.DrawText(title, new Point(w - title.Width - 8, 6));
         }
 
+        /// <summary>Линия на полу от (x1, 0, z1) до (x2, 0, z2) в проекции сцены.</summary>
+        private void FloorLine(DrawingContext dc, double x1, double z1, double x2, double z2, Pen pen, double cx, double cy, double scale)
+        {
+            dc.DrawLine(pen, Project(x1, 0, z1, cx, cy, scale), Project(x2, 0, z2, cx, cy, scale));
+        }
+
         /// <summary>Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям канонической позы.</summary>
-        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, double[]? deviation, double opacity, double cx, double floorY, double scale)
+        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, double[]? deviation, double opacity, double cx, double cy, double scale)
         {
             var l = lengths;
             var leg = Math.Max(l.LegLength, 0.1);
@@ -206,8 +272,11 @@ namespace PlayerTrial
 
             var root = (fwdH * (f.RootForward * leg)) + (leftH * (f.RootSide * leg)) + (new GhostVec(0, f.RootHeight * leg, 0));
 
-            // экран: зеркало «лицом к танцору» — мировой x на экран идёт со знаком минус
-            Point P(GhostVec p) => new Point(cx - (p.X * scale), floorY - (p.Y * scale));
+            // экран: 3D-проекция сцены (S18), зеркало внутри Project; F — перспективный множитель для радиусов
+            Point P(GhostVec p) => Project(p.X, p.Y, p.Z, cx, cy, scale);
+            double F(GhostVec p) => DepthFactor(p.X, p.Z);
+            void Capsule(int index, GhostVec a, GhostVec b, double radiusM) =>
+                DrawBone(dc, f, deviation, index, baseColor, P(a), P(b), radiusM, scale, 0.5 * (F(a) + F(b)));
 
             GhostVec Bone(int i)
             {
@@ -265,25 +334,27 @@ namespace PlayerTrial
             }
 
             torsoGeom.Freeze();
-            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale) { LineJoin = PenLineJoin.Round }, torsoGeom);
-            dc.DrawLine(new Pen(torsoBrush, 0.02 * scale) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(root), P(neck));
-            dc.DrawEllipse(torsoBrush, null, P(headC), l.HeadR * scale, l.HeadR * 1.15 * scale);
+            var fNeck = F(neck); // толщина торса и позвоночника по глубине шеи
+            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale * fNeck) { LineJoin = PenLineJoin.Round }, torsoGeom);
+            dc.DrawLine(new Pen(torsoBrush, 0.02 * scale * fNeck) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(root), P(neck));
+            var fHead = F(headC);
+            dc.DrawEllipse(torsoBrush, null, P(headC), l.HeadR * scale * fHead, l.HeadR * 1.15 * scale * fHead);
 
             // капсулы по костям: индекс отклонения = порядок CanonicalFrame.BoneNames
-            DrawBone(dc, f, deviation, 0, baseColor, P(shL), P(elbowL), 0.17 * l.UpperArm, scale);
-            DrawBone(dc, f, deviation, 1, baseColor, P(shR), P(elbowR), 0.17 * l.UpperArm, scale);
-            DrawBone(dc, f, deviation, 2, baseColor, P(elbowL), P(wristL), 0.14 * l.LowerArm, scale);
-            DrawBone(dc, f, deviation, 3, baseColor, P(elbowR), P(wristR), 0.14 * l.LowerArm, scale);
-            DrawBone(dc, f, deviation, 4, baseColor, P(hipL), P(kneeL), 0.17 * l.Thigh, scale);
-            DrawBone(dc, f, deviation, 5, baseColor, P(hipR), P(kneeR), 0.17 * l.Thigh, scale);
-            DrawBone(dc, f, deviation, 6, baseColor, P(kneeL), P(ankleL), 0.12 * l.Shin, scale);
-            DrawBone(dc, f, deviation, 7, baseColor, P(kneeR), P(ankleR), 0.12 * l.Shin, scale);
+            Capsule(0, shL, elbowL, 0.17 * l.UpperArm);
+            Capsule(1, shR, elbowR, 0.17 * l.UpperArm);
+            Capsule(2, elbowL, wristL, 0.14 * l.LowerArm);
+            Capsule(3, elbowR, wristR, 0.14 * l.LowerArm);
+            Capsule(4, hipL, kneeL, 0.17 * l.Thigh);
+            Capsule(5, hipR, kneeR, 0.17 * l.Thigh);
+            Capsule(6, kneeL, ankleL, 0.12 * l.Shin);
+            Capsule(7, kneeR, ankleR, 0.12 * l.Shin);
 
             dc.Pop();
         }
 
         /// <summary>Капсула кости; невалидная кость пропускается, валидная красится по отклонению (null отклонение — базовый цвет).</summary>
-        private static void DrawBone(DrawingContext dc, CanonicalFrame f, double[]? deviation, int index, Color baseColor, Point a, Point b, double radiusM, double scale)
+        private static void DrawBone(DrawingContext dc, CanonicalFrame f, double[]? deviation, int index, Color baseColor, Point a, Point b, double radiusM, double scale, double depth)
         {
             if (!f.BoneValid[index])
             {
@@ -291,7 +362,7 @@ namespace PlayerTrial
             }
 
             var color = deviation != null ? DeviationColor(deviation[index], baseColor) : baseColor;
-            var pen = new Pen(new SolidColorBrush(color), 2 * radiusM * scale) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
+            var pen = new Pen(new SolidColorBrush(color), 2 * radiusM * scale * depth) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
             dc.DrawLine(pen, a, b);
         }
 

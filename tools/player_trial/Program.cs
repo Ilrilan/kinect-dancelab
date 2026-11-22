@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 using System.Windows;
 
 namespace PlayerTrial
@@ -26,6 +27,9 @@ namespace PlayerTrial
         /// <summary>Стартовый режим окна (S16): probe (проба, по умолчанию) или scene (сцена сенсора).</summary>
         public string Mode { get; private set; } = "probe";
 
+        /// <summary>Стартовый ракурс (S13): c01..c09, null — ракурс видео эталона (c05).</summary>
+        public string? Camera { get; private set; }
+
         public bool NoSensor { get; private set; }
 
         public string? ShotPath { get; private set; }
@@ -52,6 +56,14 @@ namespace PlayerTrial
             if (mode == "probe" || mode == "scene")
             {
                 o.Mode = mode;
+            }
+
+            // --camera cXX (или просто номер): стартовый ракурс видео и 3D-сцены
+            var camera = Opt("--camera");
+            var cm = string.IsNullOrEmpty(camera) ? null : Regex.Match(camera, "c?(\\d{1,2})");
+            if (cm != null && cm.Success && int.TryParse(cm.Groups[1].Value, out var camN) && camN >= 1 && camN <= 9)
+            {
+                o.Camera = "c" + camN.ToString("00", System.Globalization.CultureInfo.InvariantCulture);
             }
 
             o.NoSensor = Array.IndexOf(args, "--no-sensor") >= 0;

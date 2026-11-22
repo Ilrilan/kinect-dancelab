@@ -18,13 +18,18 @@ namespace PlayerTrial
 {
     /// <summary>
     /// Окно пробного плеера (specs/player/trial.md): слева видео эталонного танцора со звуком (MediaElement,
-    /// часы пробы = Position), справа сцена двух призраков с HUD. Управление: Space пауза/плей, R рестарт с нуля.
+    /// часы пробы = Position), справа 3D-сцена двух призраков с HUD. Кольцо кнопок камер (S13) меняет ракурс
+    /// видео и камеры сцены призраков одной кнопкой (S19). Управление: Space пауза/плей, R рестарт с нуля.
     /// Код-построенный UI по образцу tools/sensor_view.
     /// </summary>
     internal sealed class MainWindow : Window
     {
         private static readonly Brush Panel = new SolidColorBrush(Color.FromRgb(0x1b, 0x1c, 0x22));
         private static readonly Brush Text = new SolidColorBrush(Color.FromRgb(0xe6, 0xe6, 0xea));
+        private static readonly Brush RingIdle = new SolidColorBrush(Color.FromRgb(0x2a, 0x2c, 0x34));
+
+        /// <summary>Заливка активной кнопки камеры (primary, как LeftColor в SkeletonCanvas).</summary>
+        private static readonly Brush RingActive = new SolidColorBrush(Color.FromRgb(0x42, 0xa5, 0xf5));
 
         private readonly Options opts;
         private readonly ComboBox trackerBox = new ComboBox { Width = 150, Margin = new Thickness(10, 8, 8, 8) };
@@ -62,8 +67,21 @@ namespace PlayerTrial
         private readonly Button attemptButton = new Button { Content = "Попытка", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock countdownLabel = new TextBlock { Foreground = Text, Text = "Отсчёт:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
         private readonly ComboBox countdownBox = new ComboBox { Width = 70, Margin = new Thickness(0, 8, 8, 8) };
-        private readonly TextBlock angleLabel = new TextBlock { Foreground = Text, Text = "Ракурс:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
-        private readonly ComboBox angleBox = new ComboBox { Width = 90, Margin = new Thickness(0, 8, 8, 8) };
+
+        // кольцо камер (S13): кнопки ракурсов по окружности вокруг «танцора», c05 внизу (фронтальный), шаг 40°;
+        // позиция кнопки на кольце = ракурс камеры, недоступные камеры (нет файла) не рисуются
+        private const double CameraYawStepDeg = 40.0;
+
+        /// <summary>
+        /// Знак азимутов сцены: -1, подобран по данным. Реальные относительные азимуты AIST++ (setting7_1):
+        /// c01 +180, c02 +135, c03 +92, c04 +42, c06 -45, c07 -89, c08 -135 — знак -1 даёт yaw = +40..+160 для
+        /// c01..c04 и -40..-160 для c06..c09, совпадающие с видео (сверка формы скелета с keypoints2d; знак +1
+        /// расходится по всем камерам).
+        /// </summary>
+        private const double CameraYawSign = -1.0;
+        private readonly Canvas angleRing = new Canvas { Width = 150, Height = 110, Margin = new Thickness(14, 2, 16, 2), VerticalAlignment = VerticalAlignment.Center };
+        private readonly List<Button> ringButtons = new List<Button>();
+        private string? currentCamera;
         private readonly TextBlock speedLabel = new TextBlock { Foreground = Text, Text = "Скорость", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
         private readonly Slider speedSlider = new Slider { Width = 120, Minimum = 0.2, Maximum = 2.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock speedValue = new TextBlock { Foreground = Text, Text = "x1.0", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
@@ -146,12 +164,14 @@ namespace PlayerTrial
         private IReadOnlyDictionary<string, LimbLengths>? userBones;
         private double userLegM;
 
-        // управление воспроизведением (S12-S14, S17)
+        // управление воспроизведением (S12-S14, S17, S19)
         private string? currentVideoFile;
         private TimeSpan? pendingRestore;
         private bool pendingResume;
         private double speedFactor = 1.0;
         private int countdownRemaining;
+        private bool switchingCamera;
+        private double lastVideoSeconds;
 
         /// <summary>Режимы одного окна (S16): проба с видео и оценкой либо сцена сенсора без видео.</summary>
         private enum AppMode
@@ -216,9 +236,18 @@ namespace PlayerTrial
             playButton.Click += (s, e) => TogglePlay();
             restartButton.Click += (s, e) => RestartFromZero();
             attemptButton.Click += (s, e) => StartAttempt();
-            angleBox.SelectionChanged += (s, e) => SwitchAngle();
             speedSlider.ValueChanged += (s, e) => OnSpeedChanged();
             countdownTimer.Tick += (s, e) => CountdownTick();
+
+            // метка танцора в центре кольца камер (S13); Ellipse полным именем: Path из Shapes конфликтует с System.IO
+            var dancerDot = new System.Windows.Shapes.Ellipse { Width = 12, Height = 12, Fill = Text };
+            Canvas.SetLeft(dancerDot, 69);
+            Canvas.SetTop(dancerDot, 38);
+            var dancerLabel = new TextBlock { Text = "танцор", Foreground = Text, FontSize = 10, Width = 150, TextAlignment = TextAlignment.Center };
+            Canvas.SetLeft(dancerLabel, 0);
+            Canvas.SetTop(dancerLabel, 54);
+            angleRing.Children.Add(dancerDot);
+            angleRing.Children.Add(dancerLabel);
 
             var bar = new DockPanel { Background = Panel, LastChildFill = false };
             DockPanel.SetDock(status, Dock.Right);
@@ -235,8 +264,7 @@ namespace PlayerTrial
             controls.Children.Add(attemptButton);
             controls.Children.Add(countdownLabel);
             controls.Children.Add(countdownBox);
-            controls.Children.Add(angleLabel);
-            controls.Children.Add(angleBox);
+            controls.Children.Add(angleRing);
             controls.Children.Add(speedLabel);
             controls.Children.Add(speedSlider);
             controls.Children.Add(speedValue);
@@ -253,6 +281,7 @@ namespace PlayerTrial
                     // переключение ракурса (S13): восстановить позицию и прежнее состояние паузы, не автоплей с нуля
                     media.Position = pendingRestore.Value;
                     pendingRestore = null;
+                    switchingCamera = false; // часы призраков снова идут по позиции видео (S19)
                     var resume = pendingResume;
                     pendingResume = false;
                     paused = !resume;
@@ -272,7 +301,11 @@ namespace PlayerTrial
 
                 UpdatePlayButton();
             };
-            media.MediaFailed += (s, e) => status.Text = "Видео не открылось: " + e.ErrorException.Message;
+            media.MediaFailed += (s, e) =>
+            {
+                switchingCamera = false;
+                status.Text = "Видео не открылось: " + e.ErrorException.Message;
+            };
             media.MediaEnded += (s, e) =>
             {
                 paused = true;
@@ -364,6 +397,21 @@ namespace PlayerTrial
             }
 
             var videoPath = FindVideo(track?.Video);
+            if (videoPath != null && opts.Camera != null)
+            {
+                // стартовый ракурс (--camera cXX, S13): сразу нужный файл, кольцо и сцена стартуют согласованно
+                var name = Path.GetFileName(videoPath);
+                var m = Regex.Match(name, "c\\d\\d");
+                if (m.Success && m.Value != opts.Camera)
+                {
+                    var candidate = Path.Combine(Path.GetDirectoryName(videoPath)!, name.Remove(m.Index, m.Length).Insert(m.Index, opts.Camera));
+                    if (File.Exists(candidate))
+                    {
+                        videoPath = candidate;
+                    }
+                }
+            }
+
             if (videoPath != null)
             {
                 videoOk = true;
@@ -720,9 +768,24 @@ namespace PlayerTrial
                 : "Режим пробы: " + opts.Seq + ".";
         }
 
+        /// <summary>
+        /// Мастер-часы (S1): позиция видео; при переключении ракурса (S19) позиция держится на последнем
+        /// значении, чтобы призраки не прыгали на ноль, пока MediaElement перезагружает файл.
+        /// </summary>
         private double ClockSeconds()
         {
-            return mediaOpened && videoOk ? media.Position.TotalSeconds : fallbackClock.TotalSeconds;
+            if (!mediaOpened || !videoOk)
+            {
+                return fallbackClock.TotalSeconds;
+            }
+
+            if (switchingCamera)
+            {
+                return lastVideoSeconds;
+            }
+
+            lastVideoSeconds = media.Position.TotalSeconds;
+            return lastVideoSeconds;
         }
 
         private void TogglePlay()
@@ -789,10 +852,15 @@ namespace PlayerTrial
             RestartFromZero();
         }
 
-        /// <summary>Ракурсы (S13): камеры c01..c09, для которых существует файл с заменённым первым cXX в имени.</summary>
+        /// <summary>Ракурсы (S13): кольцо кнопок c01..c09 вокруг «танцора», только камеры с существующим файлом.</summary>
         private void PopulateAngles(string videoPath)
         {
-            angleBox.Items.Clear();
+            foreach (var b in ringButtons)
+            {
+                angleRing.Children.Remove(b);
+            }
+
+            ringButtons.Clear();
             var name = Path.GetFileName(videoPath);
             var dir = Path.GetDirectoryName(videoPath);
             var m = Regex.Match(name, "c\\d\\d");
@@ -801,33 +869,54 @@ namespace PlayerTrial
                 return;
             }
 
-            var current = m.Value;
+            currentCamera = m.Value;
             for (var i = 1; i <= 9; i++)
             {
                 var cam = "c" + i.ToString("00", CultureInfo.InvariantCulture);
                 var candidate = name.Remove(m.Index, m.Length).Insert(m.Index, cam);
-                if (File.Exists(Path.Combine(dir, candidate)))
+                if (!File.Exists(Path.Combine(dir, candidate)))
                 {
-                    angleBox.Items.Add(cam);
+                    continue; // недоступная камера не рисуется вовсе
                 }
+
+                // позиция на кольце = ракурс: c05 внизу (фронтальный), соседи по 40°, c01 почти напротив;
+                // тот же знак, что у азимута сцены: карта кольца согласована с поворотом 3D-сцены
+                var a = (90 + (CameraYawSign * ((i - 5) * CameraYawStepDeg))) * Math.PI / 180.0;
+                var button = new Button
+                {
+                    Content = cam,
+                    Width = 30,
+                    Height = 30,
+                    FontSize = 10,
+                    Padding = new Thickness(0),
+                    Tag = cam,
+                    Background = cam == currentCamera ? RingActive : RingIdle,
+                    Foreground = Text,
+                };
+                Canvas.SetLeft(button, 75 + (55 * Math.Cos(a)) - 15);
+                Canvas.SetTop(button, 52 + (35 * Math.Sin(a)) - 15);
+                button.Click += (s, e) => SwitchAngle(cam);
+                angleRing.Children.Add(button);
+                ringButtons.Add(button);
             }
 
-            if (angleBox.Items.Contains(current))
-            {
-                angleBox.SelectedItem = current;
-            }
+            ghost.CameraYawRad = YawRad(currentCamera);
         }
 
-        /// <summary>Переключение ракурса (S13): позиция и состояние паузы сохраняются, восстанавливаются в MediaOpened.</summary>
-        private void SwitchAngle()
+        /// <summary>Азимут камеры для 3D-сцены (S19): c05 = 0°, шаг 40° по номеру; знак согласован с видео на снимках E4.</summary>
+        private static double YawRad(string cam)
         {
-            if (!videoOk || currentVideoFile == null)
-            {
-                return;
-            }
+            var n = int.Parse(cam.Substring(1), CultureInfo.InvariantCulture);
+            return CameraYawSign * ((n - 5) * CameraYawStepDeg) * Math.PI / 180.0;
+        }
 
-            var cam = angleBox.SelectedItem as string;
-            if (string.IsNullOrEmpty(cam))
+        /// <summary>
+        /// Переключение ракурса (S13, S19): одна кнопка меняет видео и камеру 3D-сцены; позиция и состояние
+        /// паузы сохраняются и восстанавливаются в MediaOpened, призраки идут по тем же часам без рывка.
+        /// </summary>
+        private void SwitchAngle(string cam)
+        {
+            if (!videoOk || currentVideoFile == null || string.IsNullOrEmpty(cam))
             {
                 return;
             }
@@ -853,7 +942,15 @@ namespace PlayerTrial
 
             pendingRestore = mediaOpened ? media.Position : TimeSpan.Zero;
             pendingResume = !paused;
+            switchingCamera = true;
             currentVideoFile = newPath;
+            currentCamera = cam;
+            ghost.CameraYawRad = YawRad(cam); // сцена поворачивается вместе с видео
+            foreach (var b in ringButtons)
+            {
+                b.Background = (string)b.Tag == cam ? RingActive : RingIdle;
+            }
+
             media.Source = new Uri(newPath);
             if (pendingResume)
             {
