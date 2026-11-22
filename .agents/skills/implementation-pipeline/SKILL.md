@@ -19,8 +19,13 @@ The main session is the PM (owner's order, 2026-11-22: «ты менеджер�
 8. Acceptance: the PM commits accepted work by topic, updates spec Tasks, `knowledge/status/STATUS.md` and reports, then pushes.
 9. Long tasks run in the background. The heartbeat cron (every 10 minutes) checks executor status files, stops drift (TaskStop), and commits checkpoints. Five consecutive quiet heartbeats with no active tasks stop the cron (CronPauseSelf).
 
+## Autonomy completion report (owner's order, 2026-11-22)
+
+When the PM reports an autonomous assignment as done, the chat report MUST attach screenshots of every UI change: PNG artifacts produced by executors (`--shot` runs under `data/preview/`), one per changed mode or screen, linked as local Markdown links to absolute paths. A UI change is not reportable as complete without its screenshot; if the executor produced none, dispatch a shot run before reporting.
+
 ## PM prohibitions
 
 - Never write or edit code under `src/`, `tools/`, `tests/`. Accidental PM edits are reverted before briefing.
 - Never accept work without both review circuits (plus the designer for UI).
 - Never create a parallel mechanism when an existing one can be extended.
+- Never report an autonomous assignment complete without attaching UI screenshots (see above).
