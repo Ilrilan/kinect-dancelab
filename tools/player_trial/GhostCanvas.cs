@@ -72,6 +72,8 @@ namespace PlayerTrial
 
         public static GhostVec operator -(GhostVec a, GhostVec b) => new GhostVec(a.X - b.X, a.Y - b.Y, a.Z - b.Z);
 
+        public static GhostVec operator -(GhostVec a) => new GhostVec(-a.X, -a.Y, -a.Z);
+
         public static GhostVec operator *(GhostVec a, double s) => new GhostVec(a.X * s, a.Y * s, a.Z * s);
 
         public static GhostVec operator *(double s, GhostVec a) => new GhostVec(a.X * s, a.Y * s, a.Z * s);
@@ -101,6 +103,10 @@ namespace PlayerTrial
     /// Эталон-призрак фиксированным полупрозрачным цветом и призрак пользователя с краской кости по отклонению
     /// (мёртвая зона TrialParams не красит, дальше плавно к насыщению). Тело капсулами одним проходом OnRender,
     /// радиус капсулы умножается на f (глубина). Пол и сетка — линии пола 4x4 м в той же проекции.
+    /// Разметка переда/зада (S20, E7): капсула рисуется тремя слоями — тонкий нейтральный ободок базы, поверх
+    /// переднее и заднее ядро, смещённые в 3D по forward торса до проекции (в профиль слои сходятся на ребро);
+    /// эталон — непрозрачные янтарь/графит, пользователь — 0.75 поверх краски отклонений; торс — те же передняя
+    /// и задняя панели; на голове бейсболка с козырьком вперёд, под призраком стрелка направления на полу.
     /// </summary>
     internal sealed class GhostCanvas : FrameworkElement
     {
@@ -120,6 +126,85 @@ namespace PlayerTrial
 
         /// <summary>Пробные пороги краски (TrialParams: мёртвая зона и насыщение, радиан).</summary>
         private static readonly TrialParams Paint = new TrialParams();
+
+        /// <summary>Цвета разметки переда/зада и бейсболки одного призрака (S20, E7).</summary>
+        private readonly struct GhostSkin
+        {
+            public GhostSkin(Color front, Color back, Color rim, Color cap, Color brim,
+                double frontOpacity, double backOpacity, double panelFrontOpacity, double panelBackOpacity)
+            {
+                Front = front;
+                Back = back;
+                Rim = rim;
+                Cap = cap;
+                Brim = brim;
+                FrontOpacity = frontOpacity;
+                BackOpacity = backOpacity;
+                PanelFrontOpacity = panelFrontOpacity;
+                PanelBackOpacity = panelBackOpacity;
+            }
+
+            /// <summary>Тёплый оттенок переднего слоя капсул и передней панели торса.</summary>
+            public Color Front { get; }
+
+            /// <summary>Холодный/тёмный оттенок заднего слоя и задней панели.</summary>
+            public Color Back { get; }
+
+            /// <summary>Нейтральный цвет тонкого ободка базовой капсулы (у пользователя поверх — краска отклонений).</summary>
+            public Color Rim { get; }
+
+            /// <summary>Цвет купола бейсболки (чуть темнее базового цвета призрака).</summary>
+            public Color Cap { get; }
+
+            /// <summary>Цвет козырька (чуть светлее купола).</summary>
+            public Color Brim { get; }
+
+            /// <summary>Непрозрачность переднего слоя капсул: у эталона непрозрачно, у пользователя поверх краски отклонений.</summary>
+            public double FrontOpacity { get; }
+
+            /// <summary>Непрозрачность заднего слоя капсул.</summary>
+            public double BackOpacity { get; }
+
+            /// <summary>Непрозрачность передней панели торса.</summary>
+            public double PanelFrontOpacity { get; }
+
+            /// <summary>Непрозрачность задней панели торса.</summary>
+            public double PanelBackOpacity { get; }
+        }
+
+        /// <summary>Разметка эталона: непрозрачные слои — перед тёплый янтарный, зад глубокий сине-графитовый; ободок нейтральный (E7).</summary>
+        private static readonly GhostSkin ReferenceSkin = new GhostSkin(
+            Color.FromRgb(0xFF, 0xC8, 0x5C), Color.FromRgb(0x22, 0x34, 0x4A), Color.FromRgb(0x8E, 0x99, 0xA3),
+            Color.FromRgb(0x50, 0x93, 0xBF), Color.FromRgb(0x71, 0xB5, 0xDD), 1.0, 1.0, 1.0, 1.0);
+
+        /// <summary>Разметка пользователя: та же схема, слои 0.75 поверх краски отклонений, панели торса 0.75/0.7 (E7).</summary>
+        private static readonly GhostSkin UserSkin = new GhostSkin(
+            Color.FromRgb(0xFF, 0xB7, 0x4D), Color.FromRgb(0x37, 0x47, 0x4F), Color.FromRgb(0xE0, 0xE0, 0xE0),
+            Color.FromRgb(0x96, 0x9A, 0xA4), Color.FromRgb(0xB2, 0xB6, 0xC0), 0.75, 0.75, 0.75, 0.7);
+
+        /// <summary>Смещение слоёв переда/зада капсул в 3D: радиус кости * 0.75 — при виде в лоб/спину один слой почти полностью перекрывает другой (S20, E7).</summary>
+        private const double FrontBackOffsetFrac = 0.75;
+
+        /// <summary>Толщина слоёв переда/зада: ~85% прежней базовой капсулы — ядро поверхности (S20, E7).</summary>
+        private const double FrontBackWidthFrac = 0.85;
+
+        /// <summary>Толщина нейтрального ободка базовой капсулы: ~30% прежней базовой (E7).</summary>
+        private const double RimWidthFrac = 0.3;
+
+        /// <summary>Смещение панелей торса: доли длины ноги (0.08 * рост в долях, S20).</summary>
+        private const double TorsoPanelOffsetFrac = 0.08;
+
+        /// <summary>Вынос козырька бейсболки вперёд: HeadR * 1.6 (S20).</summary>
+        private const double CapBrimForwardFrac = 1.6;
+
+        /// <summary>Длина стрелки направления на полу: доли длины ноги (S20).</summary>
+        private const double ArrowLengthFrac = 0.35;
+
+        /// <summary>Непрозрачность стрелки на полу.</summary>
+        private const double ArrowOpacity = 0.55;
+
+        /// <summary>Угол косок наконечника стрелки от оси, радиан (~26°).</summary>
+        private const double ArrowBarbAngleRad = 0.45;
 
         /// <summary>Расстояние камеры сцены, м (S18).</summary>
         private const double CameraDistanceM = 4.0;
@@ -193,12 +278,12 @@ namespace PlayerTrial
             DrawFloor(dc, w, h, cx, cy, scale);
             if (reference != null)
             {
-                DrawGhost(dc, reference, ReferenceColor, null, 0.4, cx, cy, scale);
+                DrawGhost(dc, reference, ReferenceColor, ReferenceSkin, null, 1.0, cx, cy, scale);
             }
 
             if (user != null)
             {
-                DrawGhost(dc, user, UserBaseColor, userDeviation, 0.85, cx, cy, scale);
+                DrawGhost(dc, user, UserBaseColor, UserSkin, userDeviation, 0.85, cx, cy, scale);
             }
         }
 
@@ -257,8 +342,13 @@ namespace PlayerTrial
             dc.DrawLine(pen, Project(x1, 0, z1, cx, cy, scale), Project(x2, 0, z2, cx, cy, scale));
         }
 
-        /// <summary>Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям канонической позы.</summary>
-        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, double[]? deviation, double opacity, double cx, double cy, double scale)
+        /// <summary>
+        /// Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям
+        /// канонической позы. Разметка переда/зада (S20): капсулы тремя слоями (база + перед/зад со смещением в 3D по
+        /// fwdT до проекции, ближний слой поверх дальнего), панели торса ±fwdT*0.08*leg, бейсболка с козырьком вперёд
+        /// по heading, стрелка направления на полу от проекции корня вперёд по heading.
+        /// </summary>
+        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, GhostSkin skin, double[]? deviation, double opacity, double cx, double cy, double scale)
         {
             var l = lengths;
             var leg = Math.Max(l.LegLength, 0.1);
@@ -275,8 +365,39 @@ namespace PlayerTrial
             // экран: 3D-проекция сцены (S18), зеркало внутри Project; F — перспективный множитель для радиусов
             Point P(GhostVec p) => Project(p.X, p.Y, p.Z, cx, cy, scale);
             double F(GhostVec p) => DepthFactor(p.X, p.Z);
-            void Capsule(int index, GhostVec a, GhostVec b, double radiusM) =>
-                DrawBone(dc, f, deviation, index, baseColor, P(a), P(b), radiusM, scale, 0.5 * (F(a) + F(b)));
+            void Line(GhostVec a, GhostVec b, double widthPx, Color color, double alpha)
+            {
+                var brush = Fade(color, alpha);
+                dc.DrawLine(new Pen(brush, widthPx) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(a), P(b));
+            }
+
+            // капсула кости тремя слоями (S20, E7): тонкий нейтральный ободок базы (у пользователя — краска
+            // отклонений), поверх зад и перед ядром ~85% прежней базовой со смещением концов в 3D по fwdT до
+            // проекции; ближний к камере слой рисуется последним — сзади виден графит, спереди янтарь, в
+            // профиль слои сходятся на ребро ободка
+            void Capsule(int index, GhostVec a, GhostVec b, double radiusM)
+            {
+                if (!f.BoneValid[index])
+                {
+                    return;
+                }
+
+                var width = 2 * radiusM * scale * 0.5 * (F(a) + F(b));
+                var paint = deviation != null ? DeviationColor(deviation[index], baseColor) : skin.Rim;
+                Line(a, b, width * RimWidthFrac, paint, 1.0);
+                var off = fwdT * (radiusM * FrontBackOffsetFrac);
+                var layerWidth = width * FrontBackWidthFrac;
+                if (F(a + off) >= F(a - off))
+                {
+                    Line(a - off, b - off, layerWidth, skin.Back, skin.BackOpacity);
+                    Line(a + off, b + off, layerWidth, skin.Front, skin.FrontOpacity);
+                }
+                else
+                {
+                    Line(a + off, b + off, layerWidth, skin.Front, skin.FrontOpacity);
+                    Line(a - off, b - off, layerWidth, skin.Back, skin.BackOpacity);
+                }
+            }
 
             GhostVec Bone(int i)
             {
@@ -299,9 +420,19 @@ namespace PlayerTrial
             var ankleR = kneeR + (Bone(7) * l.Shin);
             var headC = neck + (up * l.NeckToHead);
 
+            // стрелка направления на полу (S20): от проекции корня на пол вперёд по heading, до полупрозрачной фигуры
+            var rootFloor = new GhostVec(root.X, 0, root.Z);
+            var arrowLen = ArrowLengthFrac * leg;
+            var arrowTip = rootFloor + (fwdH * arrowLen);
+            var arrowWidth = Math.Max(2.0 * F(rootFloor), 1.5);
+            Line(rootFloor, arrowTip, arrowWidth, baseColor, ArrowOpacity);
+            var barbLen = arrowLen * 0.3;
+            Line(arrowTip, arrowTip + (RotateY(fwdH, ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
+            Line(arrowTip, arrowTip + (RotateY(fwdH, -ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
+
             dc.PushOpacity(opacity);
 
-            // туловище четырёхугольником плечо-бедро, позвоночник тонкой линией, голова кругом
+            // туловище: базовый четырёхугольник с краской отклонений + панели переда/зада ±fwdT (S20)
             Color torsoColor;
             if (deviation != null)
             {
@@ -324,21 +455,69 @@ namespace PlayerTrial
             }
 
             var torsoBrush = new SolidColorBrush(torsoColor);
-            var torsoGeom = new StreamGeometry();
-            using (var ctx = torsoGeom.Open())
+            var fNeck = F(neck); // толщина торса и позвоночника по глубине шеи
+            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale * fNeck) { LineJoin = PenLineJoin.Round }, Quad(P(shL), P(shR), P(hipR), P(hipL)));
+
+            // панели торса: те же слои перед/зад, что у капсул; ближний к камере поверх
+            var panelOff = fwdT * (TorsoPanelOffsetFrac * leg);
+            var panelPenWidth = 0.02 * scale * fNeck;
+            var frontNearer = F(neck + panelOff) >= F(neck - panelOff);
+            void Panel(GhostVec off, Color color, double alpha)
             {
-                ctx.BeginFigure(P(shL), true, true);
-                ctx.LineTo(P(shR), true, false);
-                ctx.LineTo(P(hipR), true, false);
-                ctx.LineTo(P(hipL), true, false);
+                var brush = Fade(color, alpha);
+                dc.DrawGeometry(brush, new Pen(brush, panelPenWidth) { LineJoin = PenLineJoin.Round }, Quad(P(shL + off), P(shR + off), P(hipR + off), P(hipL + off)));
             }
 
-            torsoGeom.Freeze();
-            var fNeck = F(neck); // толщина торса и позвоночника по глубине шеи
-            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale * fNeck) { LineJoin = PenLineJoin.Round }, torsoGeom);
+            if (frontNearer)
+            {
+                Panel(-panelOff, skin.Back, skin.PanelBackOpacity);
+                Panel(panelOff, skin.Front, skin.PanelFrontOpacity);
+            }
+            else
+            {
+                Panel(panelOff, skin.Front, skin.PanelFrontOpacity);
+                Panel(-panelOff, skin.Back, skin.PanelBackOpacity);
+            }
+
             dc.DrawLine(new Pen(torsoBrush, 0.02 * scale * fNeck) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(root), P(neck));
+
+            // голова и бейсболка (S20): купол — дуга по верхней половине эллипса головы, козырёк — плоский
+            // четырёхугольник от кромки купола вперёд по heading на уровне середины головы; сзади козырёк
+            // за головой — рисуется до эллипса, спереди — после
             var fHead = F(headC);
-            dc.DrawEllipse(torsoBrush, null, P(headC), l.HeadR * scale * fHead, l.HeadR * 1.15 * scale * fHead);
+            var headP = P(headC);
+            var rx = l.HeadR * scale * fHead;
+            var ry = l.HeadR * 1.15 * scale * fHead;
+            var halfBrim = 0.95 * l.HeadR;
+            var brimBaseL = headC - (leftH * halfBrim);
+            var brimBaseR = headC + (leftH * halfBrim);
+            var brimFwd = fwdH * (CapBrimForwardFrac * l.HeadR);
+            void Brim()
+            {
+                dc.DrawGeometry(Fade(skin.Brim, 1.0), null, Quad(P(brimBaseL), P(brimBaseR), P(brimBaseR + brimFwd), P(brimBaseL + brimFwd)));
+            }
+
+            var brimAhead = F(headC + (brimFwd * 0.5)) > fHead;
+            if (!brimAhead)
+            {
+                Brim();
+            }
+
+            dc.DrawEllipse(torsoBrush, null, headP, rx, ry);
+            if (brimAhead)
+            {
+                Brim();
+            }
+
+            var dome = new StreamGeometry();
+            using (var ctx = dome.Open())
+            {
+                ctx.BeginFigure(new Point(headP.X - rx, headP.Y), false, false);
+                ctx.ArcTo(new Point(headP.X + rx, headP.Y), new Size(rx, ry), 0, false, SweepDirection.Clockwise, true, false);
+            }
+
+            dome.Freeze();
+            dc.DrawGeometry(null, new Pen(Fade(skin.Cap, 1.0), Math.Max(rx * 0.18, 1.5)) { LineJoin = PenLineJoin.Round }, dome);
 
             // капсулы по костям: индекс отклонения = порядок CanonicalFrame.BoneNames
             Capsule(0, shL, elbowL, 0.17 * l.UpperArm);
@@ -353,17 +532,34 @@ namespace PlayerTrial
             dc.Pop();
         }
 
-        /// <summary>Капсула кости; невалидная кость пропускается, валидная красится по отклонению (null отклонение — базовый цвет).</summary>
-        private static void DrawBone(DrawingContext dc, CanonicalFrame f, double[]? deviation, int index, Color baseColor, Point a, Point b, double radiusM, double scale, double depth)
+        /// <summary>Четырёхугольник по четырём экранным точкам (торс, панели, козырёк).</summary>
+        private static StreamGeometry Quad(Point a, Point b, Point c, Point d)
         {
-            if (!f.BoneValid[index])
+            var g = new StreamGeometry();
+            using (var ctx = g.Open())
             {
-                return;
+                ctx.BeginFigure(a, true, true);
+                ctx.LineTo(b, true, false);
+                ctx.LineTo(c, true, false);
+                ctx.LineTo(d, true, false);
             }
 
-            var color = deviation != null ? DeviationColor(deviation[index], baseColor) : baseColor;
-            var pen = new Pen(new SolidColorBrush(color), 2 * radiusM * scale * depth) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round };
-            dc.DrawLine(pen, a, b);
+            return g;
+        }
+
+        /// <summary>Кисть цвета с альфой: полупрозрачные слои разметки поверх базы (S20).</summary>
+        private static SolidColorBrush Fade(Color color, double alpha)
+        {
+            var a = Math.Max(0, Math.Min(1, alpha));
+            return new SolidColorBrush(a >= 0.999 ? color : Color.FromArgb((byte)Math.Round(255 * a), color.R, color.G, color.B));
+        }
+
+        /// <summary>Поворот горизонтального вектора вокруг вертикали (коски стрелки на полу).</summary>
+        private static GhostVec RotateY(GhostVec v, double angleRad)
+        {
+            var c = Math.Cos(angleRad);
+            var s = Math.Sin(angleRad);
+            return new GhostVec((v.X * c) + (v.Z * s), 0, (-(v.X * s)) + (v.Z * c));
         }
 
         /// <summary>Мёртвая зона — базовый цвет, дальше плавная краска к насыщенному (TrialParams).</summary>
