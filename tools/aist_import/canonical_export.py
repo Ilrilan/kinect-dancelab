@@ -24,7 +24,16 @@ side = влево от взгляда, height = над полом.
 
 Кадры, где нужные точки NaN, пропускаются с подсчётом в stdout.
 
-Запуск: python canonical_export.py --seq <имя cAll> [--src ...] [--out ...]
+Рядом с canonical.json пишется <seq>.cams.json (следящий кадр, trial S21/T12):
+по каждой из камер c01..c09 (ось 0 keypoints2d, docs/aist-format-findings.md,
+ключ (9, N, 17, 3)) кадры {"t", "root":[u,v], "bbox":[uMin,vMin,uMax,vMax]}:
+root -- центр бёдер (COCO 11/12), bbox -- по валидным точкам кадра
+(score >= 0.3); кадры с невалидными бёдрами пропускаются; t -- из timestamps
+pkl (микросекунды), в JSON переводится в секунды (так же, как t в canonical.json).
+Формат: {"formatVersion":1, "fps":60, "frameCount":N,
+"cameras":{"c01":{"frames":[{"t":..,"root":[u,v],"bbox":[..]},...]},...}}.
+
+Запуск: python canonical_export.py --seq <имя cAll> [--src ...] [--src2d ...] [--out ...]
 Порядок COCO-17: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb,
 lwri, rwri, lhip, rhip, lkne, rkne, lank, rank.
 """
@@ -59,6 +68,7 @@ BONES = [
 ]
 CORE_POINTS = [LSHO, RSHO, LELB, RELB, LWRI, RWRI, LHIP, RHIP, LKNE, RKNE, LANK, RANK]
 FPS = 60.0                  # findings: 720 кадров на 12 с
+CAM_SCORE_MIN = 0.3         # следящий кадр (S21/T12): бёдра с меньшим score пропускаются
 FLOOR_P2_GLOBAL = 71.6      # глобальная медиана ank_p2, см (findings)
 SOLE_OFFSET_CM = 6.4        # лодыжка-подошва, середина 6.2-6.6 (findings)
 WORLD_UP = np.array([0.0, 1.0, 0.0])
@@ -74,15 +84,74 @@ def frame_coords(v, left, up, fwd):
     return np.array([np.dot(v, left), np.dot(v, up), np.dot(v, fwd)])
 
 
+def export_cams(seq, kp2d_path, out_dir):
+    """<seq>.cams.json для следящего кадра (trial S21/T12): по камерам c01..c09 кадры
+    {"t": сек, "root": [u,v] (центр бёдер COCO 11/12), "bbox": [uMin,vMin,uMax,vMax] --
+    по валидным (score >= CAM_SCORE_MIN, конечные) ключевым точкам COCO-17 кадра},
+    t в секундах из timestamps (микросекунды). Кадры с невалидными бёдрами (нет root)
+    пропускаются. Возвращает (путь, кадров всего, список пропущенных по камерам)."""
+    data = safe_pickle.load(kp2d_path)
+    if "keypoints2d" not in data or "timestamps" not in data:
+        sys.exit("нет ключей keypoints2d/timestamps: " + kp2d_path)
+    K = np.asarray(data["keypoints2d"], dtype=np.float64)
+    ts = np.asarray(data["timestamps"], dtype=np.float64).ravel()
+    if K.ndim != 4 or K.shape[0] < 9:
+        sys.exit(f"ключ keypoints2d неожиданной формы {K.shape} (нужна (9, N, 17, 3)): " + kp2d_path)
+
+    n_frames = min(K.shape[1], len(ts))
+    cams = {}
+    skipped = []
+    for c in range(9):
+        frames = []
+        n_skip = 0
+        for i in range(n_frames):
+            l = K[c, i, LHIP]
+            r = K[c, i, RHIP]
+            if not (np.isfinite(l[:2]).all() and np.isfinite(r[:2]).all()) or \
+                    min(l[2], r[2]) < CAM_SCORE_MIN:
+                n_skip += 1
+                continue
+            pts = K[c, i]  # (17, 3): x, y, score
+            ok = np.isfinite(pts[:, :2]).all(axis=1) & (pts[:, 2] >= CAM_SCORE_MIN)
+            if not ok.any():
+                n_skip += 1
+                continue
+            xy = pts[ok, :2]
+            bbox = [float(xy[:, 0].min()), float(xy[:, 1].min()),
+                    float(xy[:, 0].max()), float(xy[:, 1].max())]
+            frames.append({
+                "t": round(float(ts[i] / 1e6), 4),
+                "root": [round((float(l[0]) + float(r[0])) / 2.0, 1),
+                         round((float(l[1]) + float(r[1])) / 2.0, 1)],
+                "bbox": [round(v, 1) for v in bbox],
+            })
+        cams[f"c{c + 1:02d}"] = {"frames": frames}
+        skipped.append(n_skip)
+
+    result = {
+        "formatVersion": 1,
+        "fps": int(FPS),
+        "frameCount": n_frames,
+        "cameras": cams,
+    }
+    out_path = os.path.join(out_dir, seq + ".cams.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=1)
+    return out_path, n_frames, skipped
+
+
 def main():
-    ap = argparse.ArgumentParser(description="AIST++ keypoints3d_optim -> canonical.json")
+    ap = argparse.ArgumentParser(description="AIST++ keypoints3d_optim -> canonical.json (+ .cams.json)")
     ap.add_argument("--seq", required=True, help="имя последовательности с cAll")
     ap.add_argument("--src", default="data/aist/extracted/keypoints3d")
+    ap.add_argument("--src2d", default="data/aist/extracted/keypoints2d",
+                    help="каталог keypoints2d для <seq>.cams.json (следящий кадр, S21/T12)")
     ap.add_argument("--out", default="data/derived/trial")
     args = ap.parse_args()
 
     repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     src = args.src if os.path.isabs(args.src) else os.path.join(repo, args.src)
+    src2d = args.src2d if os.path.isabs(args.src2d) else os.path.join(repo, args.src2d)
     out_dir = args.out if os.path.isabs(args.out) else os.path.join(repo, args.out)
     pkl_path = os.path.join(src, args.seq + ".pkl")
     if not os.path.isfile(pkl_path):
@@ -191,6 +260,16 @@ def main():
     out_path = os.path.join(out_dir, args.seq + ".canonical.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
+
+    # ---- <seq>.cams.json: следящий кадр (S21/T12), если keypoints2d на месте ----
+    kp2d_path = os.path.join(src2d, args.seq + ".pkl")
+    if os.path.isfile(kp2d_path):
+        cams_path, cams_frames, cams_skipped = export_cams(args.seq, kp2d_path, out_dir)
+        print(f"cams.json: {cams_path}")
+        print(f"  камер: {len(cams_skipped)}, кадров: {cams_frames}, "
+              f"пропущено по камерам c01..c09: {cams_skipped}")
+    else:
+        print(f"cams.json не записан: нет {kp2d_path}")
 
     # ---- контрольные числа ----
     print(f"последовательность: {args.seq}")

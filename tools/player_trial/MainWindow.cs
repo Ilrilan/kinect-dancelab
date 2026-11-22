@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -86,11 +87,11 @@ namespace PlayerTrial
         private readonly Slider speedSlider = new Slider { Width = 120, Minimum = 0.2, Maximum = 2.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock speedValue = new TextBlock { Foreground = Text, Text = "x1.0", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
 
-        // регулятор кадра (S21, T11): единый зум видео (обрезка боков сцены: стен и камер) и сцены призраков,
-        // умолчание увеличенное; один слайдер меняет оба сразу (S19)
+        // регулятор кадра (S21, T11): множитель поверх авто-зума видео (T12: авто-кадр по bbox танцора)
+        // и зума сцены призраков; умолчание 1.0 (чистый авто-кадр); один слайдер меняет оба сразу (S19)
         private readonly TextBlock zoomLabel = new TextBlock { Foreground = Text, Text = "Кадр", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
-        private readonly Slider zoomSlider = new Slider { Width = 120, Minimum = 1.0, Maximum = 3.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.6, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
-        private readonly TextBlock zoomValue = new TextBlock { Foreground = Text, Text = "x1.6", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly Slider zoomSlider = new Slider { Width = 120, Minimum = 1.0, Maximum = 3.0, TickFrequency = 0.1, IsSnapToTickEnabled = true, SmallChange = 0.1, Value = 1.0, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly TextBlock zoomValue = new TextBlock { Foreground = Text, Text = "x1.0 × авто", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock countdownText = new TextBlock
         {
             Foreground = Text,
@@ -106,8 +107,12 @@ namespace PlayerTrial
         private readonly DispatcherTimer countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
         private LiveRecorder? recorder;
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
-        private readonly ScaleTransform videoZoom = new ScaleTransform(1.0, 1.0); // зум кадра видео (S21), ведёт слайдер «Кадр»
+        private readonly ScaleTransform videoZoom = new ScaleTransform(1.0, 1.0); // зум кадра видео (S21), ведёт авто-кадр × слайдер на тике
+        private readonly TranslateTransform videoPan = new TranslateTransform(); // авто-панорама видео (S21, T12), ведёт следящий кадр
         private readonly MediaElement media = new MediaElement { Stretch = Stretch.Uniform, LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Close, ScrubbingEnabled = true };
+
+        /// <summary>Панель видео: видимое окно следящего кадра (высота окна для клампа и центра панорамы).</summary>
+        private readonly Grid videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10), ClipToBounds = true };
         private readonly GhostCanvas ghost = new GhostCanvas();
         private readonly Grid views = new Grid();
         private readonly Grid sceneView = new Grid { Visibility = Visibility.Collapsed };
@@ -127,6 +132,19 @@ namespace PlayerTrial
         private readonly StopwatchLike fallbackClock = new StopwatchLike();
 
         private CanonicalTrack? track;
+
+        // следящий кадр (S21, T12): <seq>.cams.json — камера -> кадры [t, u, v, uMin, vMin, uMax, vMax]:
+        // root (u,v) и bbox танцора в пикселях кадра, t в секундах
+        private const double AutoZoomFallback = 1.6; // база авто-зума без cams.json (прежнее умолчание)
+        private const double BboxWindowSec = 0.7;    // расширение bbox по времени (гладкость, без пампинга на махах)
+        private const double ShoePadRows = 75.0;     // обувь ниже лодыжек-ключевых точек, строк источника (худший кадр c05: выпад ~66)
+        private const double HeadShiftFrac = 0.07;   // сдвиг центра окна вверх (запас голове), доли высоты окна
+        private readonly Dictionary<string, double[][]> camRoot = new Dictionary<string, double[][]>();
+        private double smoothedZoomAuto = AutoZoomFallback;
+        private double smoothedCenterU = double.NaN;
+        private double smoothedCenterV = double.NaN;
+        private double smoothedPanX;
+        private double smoothedPanY;
         private TrialScorer? scorer;
         private TrialScore? lastScore;
         private PlayerSession? session;
@@ -247,7 +265,7 @@ namespace PlayerTrial
             zoomSlider.ValueChanged += (s, e) => OnZoomChanged();
             countdownTimer.Tick += (s, e) => CountdownTick();
 
-            // стартовый зум кадра (S21): --zoom либо умолчание слайдера 1.6 (ValueChanged на инициализатор не срабатывает)
+            // стартовый множитель кадра (S21): --zoom либо умолчание слайдера 1.0 (ValueChanged на инициализатор не срабатывает)
             if (opts.Zoom.HasValue)
             {
                 zoomSlider.Value = opts.Zoom.Value;
@@ -331,11 +349,15 @@ namespace PlayerTrial
                 UpdatePlayButton();
             };
 
-            // зум кадра видео (S21): ScaleTransform с центром в центре кадра; вылезшие края (белые стены,
-            // камеры студии) срезает панель — у Grid ClipToBounds по умолчанию false, включаем явно
+            // зум кадра видео (S21, T12) + следящая панорама videoPan (горизонталь и вертикаль,
+            // ведётся на тике по root2d из cams.json): центр трансформа (0.5, 0.5), панорама
+            // доминирует над якорем. Вылезшие края срезает панель — у Grid ClipToBounds по
+            // умолчанию false, включаем явно
             media.RenderTransformOrigin = new Point(0.5, 0.5);
-            media.RenderTransform = videoZoom;
-            var videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10), ClipToBounds = true };
+            var videoTransform = new TransformGroup();
+            videoTransform.Children.Add(videoZoom);
+            videoTransform.Children.Add(videoPan);
+            media.RenderTransform = videoTransform;
             videoPanel.Children.Add(media);
 
             var ghostPanel = new Grid { Margin = new Thickness(5, 0, 10, 10) };
@@ -419,6 +441,9 @@ namespace PlayerTrial
                 status.Text = "Эталон не загрузился (" + canonicalPath + "): " + ex.Message;
             }
 
+            // следящий кадр (S21, T12): пиксели корня танцора по камерам, рядом с canonical.json
+            LoadCamRoot(Path.Combine(Path.GetDirectoryName(canonicalPath)!, opts.Seq + ".cams.json"));
+
             var videoPath = FindVideo(track?.Video);
             if (videoPath != null && opts.Camera != null)
             {
@@ -479,16 +504,207 @@ namespace PlayerTrial
 
             if (track == null)
             {
+                UpdateVideoFrame(ClockSeconds()); // следящий кадр не зависит от эталонного трека
                 return;
             }
 
             var t = ClockSeconds();
+            UpdateVideoFrame(t);
             ghost.SetReference(track.Sample(t));
             UpdateLive(t);
             if (tick % 6 == 0)
             {
                 UpdateHud(t);
             }
+        }
+
+        /// <summary>
+        /// Читает <seq>.cams.json (следящий кадр, S21/T12): по камерам кадры {t, root:[u,v],
+        /// bbox:[uMin,vMin,uMax,vMax]} с t в секундах. Нет файла/камеры — авто-кадр работает
+        /// в fallback (база 1.6, центр кадра).
+        /// </summary>
+        private void LoadCamRoot(string path)
+        {
+            camRoot.Clear();
+            try
+            {
+                using var stream = File.OpenRead(path);
+                using var doc = JsonDocument.Parse(stream);
+                if (doc.RootElement.TryGetProperty("cameras", out var cams))
+                {
+                    foreach (var c in cams.EnumerateObject())
+                    {
+                        if (!c.Value.TryGetProperty("frames", out var rows) || rows.ValueKind != JsonValueKind.Array)
+                        {
+                            continue;
+                        }
+
+                        var list = new List<double[]>();
+                        foreach (var p in rows.EnumerateArray())
+                        {
+                            if (p.ValueKind != JsonValueKind.Object ||
+                                    !p.TryGetProperty("t", out var tEl) ||
+                                    !p.TryGetProperty("root", out var rootEl) ||
+                                    !p.TryGetProperty("bbox", out var bboxEl) ||
+                                    rootEl.GetArrayLength() < 2 || bboxEl.GetArrayLength() < 4)
+                            {
+                                continue;
+                            }
+
+                            list.Add(new[]
+                            {
+                                tEl.GetDouble(),
+                                rootEl[0].GetDouble(), rootEl[1].GetDouble(),
+                                bboxEl[0].GetDouble(), bboxEl[1].GetDouble(),
+                                bboxEl[2].GetDouble(), bboxEl[3].GetDouble(),
+                            });
+                        }
+
+                        if (list.Count > 0)
+                        {
+                            camRoot[c.Name] = list.ToArray();
+                        }
+                    }
+                }
+                else
+                {
+                    status.Text = "cams.json без ключа cameras: авто-кадр в fallback (" + path + ").";
+                }
+            }
+            catch (Exception ex)
+            {
+                status.Text = "cams.json не загрузился: авто-кадр в fallback (" + ex.Message + ").";
+            }
+        }
+
+        /// <summary>
+        /// Расширенный по времени bbox танцора: объединение bbox кадров текущей камеры в окне
+        /// t ± BboxWindowSec (гладкость без пампинга на махах); false, если данных нет.
+        /// </summary>
+        private bool TryGetAutoFrame(double t, out (double UMin, double VMin, double UMax, double VMax) box)
+        {
+            box = default;
+            if (!camRoot.TryGetValue(currentCamera ?? string.Empty, out var rows) || rows.Length == 0)
+            {
+                return false;
+            }
+
+            var lo = 0;
+            var hi = rows.Length;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) / 2;
+                if (rows[mid][0] < t - BboxWindowSec)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            var uMin = double.MaxValue;
+            var vMin = double.MaxValue;
+            var uMax = double.MinValue;
+            var vMax = double.MinValue;
+            for (var i = lo; i < rows.Length && rows[i][0] <= t + BboxWindowSec; i++)
+            {
+                uMin = Math.Min(uMin, rows[i][3]);
+                vMin = Math.Min(vMin, rows[i][4]);
+                uMax = Math.Max(uMax, rows[i][5]);
+                vMax = Math.Max(vMax, rows[i][6]);
+            }
+
+            if (uMin > uMax)
+            {
+                return false; // в окне не оказалось ни одного кадра (берём fallback)
+            }
+
+            box = (uMin, vMin, uMax, vMax);
+            return true;
+        }
+
+        /// <summary>
+        /// Следящий кадр (S21, T12): авто-зум и панорама видео по bbox танцора из cams.json текущей
+        /// камеры. zAuto = clamp(min(winW/(bw+pad), winH/(bh+pad)), 1, 3), pad = 25% габарита:
+        /// вертикальный паддинг асимметричный (верхней кромке 40%, нижней 60%), низ bbox расширен
+        /// на ShoePadRows строк (обувь ниже лодыжек-ключевых точек), окно панели в пикселях
+        /// источника = win/(s); итог z = zAuto * слайдер (сглаженные 0.2/тик). Окно центрируется
+        /// на сглаженном центре паддингованного bbox со сдвигом вверх 7% высоты окна (запас голове):
+        /// Tx = -z*s*(cu - W/2), Ty = -z*s*(cv_цель - H/2). Клампы панорамы: окно не выходит за края
+        /// контента. Нет cams.json — fallback: база zAuto = 1.6, центр = центр кадра (панорамы нет).
+        /// </summary>
+        private void UpdateVideoFrame(double t)
+        {
+            var sliderZoom = Math.Max(1.0, Math.Min(3.0, Math.Round(zoomSlider.Value, 1)));
+            var winH = videoPanel.ActualHeight;
+            if (!videoOk || !mediaOpened || media.NaturalVideoWidth <= 0 ||
+                    media.ActualWidth < 10 || media.ActualHeight < 10 || winH < 10)
+            {
+                smoothedPanX = 0;
+                smoothedPanY = 0;
+                smoothedZoomAuto = AutoZoomFallback * sliderZoom;
+                videoPan.X = 0;
+                videoPan.Y = 0;
+                return;
+            }
+
+            var wSrc = (double)media.NaturalVideoWidth;
+            var hSrc = (double)media.NaturalVideoHeight;
+            var s = Math.Min(media.ActualWidth / wSrc, media.ActualHeight / hSrc); // контент в пикселях элемента
+            var winW = media.ActualWidth; // панель ширины контента (медиа заполняет окно по ширине)
+
+            // авто-кадр: расширенный bbox, цель зума по габариту танцора с запасом pad = 25%
+            var hasBox = TryGetAutoFrame(t, out var box);
+            double zAutoTarget;
+            double cUTarget;
+            double cVTarget;
+            if (hasBox)
+            {
+                var vMin = box.VMin;
+                var vMax = box.VMax + ShoePadRows; // bbox по лодыжкам: обувь ниже, расширяем низ
+                var bw = (box.UMax - box.UMin) * 1.25;                    // паддинг 25%: по половине на борт
+                var bh = (vMax - vMin) * 1.25;                            // сверху 40% паддинга, снизу 60%
+                zAutoTarget = Math.Max(1.0, Math.Min(3.0, Math.Min((winW / s) / bw, (winH / s) / bh)));
+                cUTarget = (box.UMin + box.UMax) / 2.0;
+                // центр паддингованного бокса: [vMin-0.4p, vMax+0.6p] -> центр = центр bbox + 0.1*p
+                cVTarget = (vMin + vMax) / 2.0 + (0.10 * 0.25 * (vMax - vMin));
+            }
+            else
+            {
+                zAutoTarget = AutoZoomFallback;
+                cUTarget = wSrc / 2.0;
+                cVTarget = hSrc / 2.0;
+            }
+
+            if (double.IsNaN(smoothedCenterU))
+            {
+                smoothedCenterU = cUTarget; // первый валидный тик: без проползания из нуля
+                smoothedCenterV = cVTarget;
+            }
+            else
+            {
+                smoothedCenterU += 0.2 * (cUTarget - smoothedCenterU);
+                smoothedCenterV += 0.2 * (cVTarget - smoothedCenterV);
+            }
+
+            smoothedZoomAuto += 0.2 * (zAutoTarget - smoothedZoomAuto);
+            var z = Math.Max(1.0, Math.Min(3.0, smoothedZoomAuto * sliderZoom));
+            videoZoom.ScaleX = z;
+            videoZoom.ScaleY = z;
+
+            // панорама: окно центрируется на паддингованном bbox со сдвигом вверх 7% высоты окна
+            var maxPanX = Math.Max(0.0, ((z * s * wSrc) - winW) / 2.0);
+            var maxPanY = Math.Max(0.0, ((z * s * hSrc) - winH) / 2.0);
+            var vTarget = smoothedCenterV - (HeadShiftFrac * winH / (s * z));
+            var targetX = Math.Max(-maxPanX, Math.Min(maxPanX, -z * s * (smoothedCenterU - (wSrc / 2.0))));
+            var targetY = Math.Max(-maxPanY, Math.Min(maxPanY, -z * s * (vTarget - (hSrc / 2.0))));
+
+            smoothedPanX += 0.2 * (targetX - smoothedPanX);
+            smoothedPanY += 0.2 * (targetY - smoothedPanY);
+            videoPan.X = smoothedPanX;
+            videoPan.Y = smoothedPanY;
         }
 
         /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг.</summary>
@@ -1008,8 +1224,8 @@ namespace PlayerTrial
         }
 
         /// <summary>
-        /// Кадр (S21, S19): один слайдер зумит видео (ScaleTransform с центром в центре кадра, панель
-        /// срезает вылезшие стены и камеры) и сцену призраков (GhostCanvas.FrameZoom) одновременно.
+        /// Кадр (S21, S19, T12): слайдер — множитель поверх авто-зума видео (итог ведёт авто-кадр
+        /// на тике, UpdateVideoFrame) и прямой зум сцены призраков (GhostCanvas.FrameZoom).
         /// </summary>
         private void OnZoomChanged()
         {
@@ -1024,10 +1240,9 @@ namespace PlayerTrial
                 v = 3.0;
             }
 
-            zoomValue.Text = "x" + v.ToString("0.0", CultureInfo.InvariantCulture);
+            zoomValue.Text = "x" + v.ToString("0.0", CultureInfo.InvariantCulture) + " × авто";
             ghost.FrameZoom = v;
-            videoZoom.ScaleX = v;
-            videoZoom.ScaleY = v;
+            // видео-зум здесь не ставится: итог z = zAuto * слайдер применяется на тике
         }
 
         private void RestartFromZero()
