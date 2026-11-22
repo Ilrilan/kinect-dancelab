@@ -23,6 +23,8 @@ namespace PlayerTrial
     /// часы пробы = Position), справа 3D-сцена двух призраков с HUD. Кольцо кнопок камер (S13) меняет ракурс
     /// видео и камеры сцены призраков одной кнопкой (S19). Управление: Space пауза/плей (пауза — режим
     /// подгонки позы, S22: эталон застыл, живая подсветка и мгновенный процент позы), R рестарт с нуля.
+    /// Финальный экран итогов трека (T20): по MediaEnded с оценкой — итоговый процент, грубые ошибки,
+    /// покрытие, длительность; «Ещё раз» = попытка, «Закрыть» прячет.
     /// Сторож триала (T19): nuitrack-сессия умерла (нет скелета дольше 5 с) — авто-рестарт Stop->Start,
     /// видео/оценка/эталон-призрак не останавливаются; калибровка ноги и пол сбрасываются только при
     /// смене трекера. Код-построенный UI по образцу tools/sensor_view.
@@ -109,6 +111,46 @@ namespace PlayerTrial
             Visibility = Visibility.Collapsed,
         };
         private readonly DispatcherTimer countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+
+        // финальный экран итогов трека (T20, аудит P1.9): карточка по центру сцены призраков
+        // (расположение как countdownText, панель шире), появляется при MediaEnded только с оценкой
+        // (lastScore != null; --no-sensor или нет человека — не показывается). «Ещё раз» = попытка
+        // (отсчёт, рестарт с нуля), «Закрыть» просто прячет; любой StartAttempt/RestartFromZero прячет,
+        // смена ракурса оверлей сохраняет — финал можно рассматривать в другом ракурсе видео.
+        // Запись и сенсор оверлей не трогает.
+        private static readonly Brush FinalCardBrush = new SolidColorBrush(Color.FromArgb(0xb8, 0x1b, 0x1c, 0x22));
+        private readonly Border finalCard = new Border
+        {
+            Background = FinalCardBrush,
+            BorderBrush = RingIdle,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Padding = new Thickness(36, 26, 36, 26),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Visibility = Visibility.Collapsed,
+        };
+        private readonly TextBlock finalTotal = new TextBlock
+        {
+            Foreground = Text,
+            FontSize = 72,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 12),
+        };
+        private readonly TextBlock finalStats = new TextBlock
+        {
+            Foreground = Text,
+            FontSize = 18,
+            TextAlignment = TextAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 18),
+        };
+        private readonly Button finalRetryButton = new Button { Content = "Ещё раз", Width = 130, Height = 32, Margin = new Thickness(0, 0, 12, 0), Background = RingIdle, Foreground = Text };
+        private readonly Button finalCloseButton = new Button { Content = "Закрыть", Width = 130, Height = 32, Background = RingIdle, Foreground = Text };
+        private double finalDurationSec; // длительность трека, ClockSeconds на момент MediaEnded
+        private double coverageSum;      // сумма покрытий оценённых кадров: среднее для финала (T20),
+        private int coverageCount;       // т.к. TrialScore.Coverage — покрытие последнего сравнения, не среднее
+
         private LiveRecorder? recorder;
         private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
         private readonly ScaleTransform videoZoom = new ScaleTransform(1.0, 1.0); // зум кадра видео (S21), ведёт авто-кадр × слайдер на тике
@@ -290,6 +332,8 @@ namespace PlayerTrial
             playButton.Click += (s, e) => TogglePlay();
             restartButton.Click += (s, e) => RestartFromZero();
             attemptButton.Click += (s, e) => StartAttempt();
+            finalRetryButton.Click += (s, e) => StartAttempt(); // «Ещё раз» с финала (T20) = попытка
+            finalCloseButton.Click += (s, e) => HideFinalOverlay();
             speedSlider.ValueChanged += (s, e) => OnSpeedChanged();
             zoomSlider.ValueChanged += (s, e) => OnZoomChanged();
             countdownTimer.Tick += (s, e) => CountdownTick();
@@ -375,6 +419,8 @@ namespace PlayerTrial
             media.MediaEnded += (s, e) =>
             {
                 paused = true;
+                finalDurationSec = ClockSeconds(); // длительность трека на конец (T20)
+                ShowFinalOverlay(); // только с оценкой (lastScore != null), иначе — пауза как раньше
                 UpdatePlayButton();
             };
 
@@ -393,6 +439,26 @@ namespace PlayerTrial
             ghostPanel.Children.Add(ghost);
             ghostPanel.Children.Add(hud);
             ghostPanel.Children.Add(countdownText);
+
+            // финальный экран (T20): карточка итогов в центре сцены призраков, поверх остального
+            var finalButtons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
+            finalButtons.Children.Add(finalRetryButton);
+            finalButtons.Children.Add(finalCloseButton);
+            var finalStack = new StackPanel();
+            finalStack.Children.Add(new TextBlock
+            {
+                Foreground = Text,
+                Text = "Трек пройден",
+                FontSize = 26,
+                FontWeight = FontWeights.SemiBold,
+                TextAlignment = TextAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 8),
+            });
+            finalStack.Children.Add(finalTotal);
+            finalStack.Children.Add(finalStats);
+            finalStack.Children.Add(finalButtons);
+            finalCard.Child = finalStack;
+            ghostPanel.Children.Add(finalCard);
 
             views.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             views.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -773,6 +839,8 @@ namespace PlayerTrial
             {
                 lastScore = scorer.Update(t, userFrame);
                 lastScoredT = t;
+                coverageSum += lastScore.Coverage; // среднее покрытие за трек для финала (T20):
+                coverageCount++;                   // TrialScore.Coverage — покрытие последнего кадра
             }
 
             // краска костей: сравнение на применённом сдвиге скорера; на паузе сдвиг заморожен
@@ -1256,9 +1324,11 @@ namespace PlayerTrial
         /// <summary>Текст кнопки плей/пауза всегда синхронен состоянию (кнопка и Space меняют одно и то же).</summary>
         private void UpdatePlayButton() => playButton.Content = paused ? "▶ Плей" : "⏸ Пауза";
 
-        /// <summary>Попытка (S14): пауза видео и обратный отсчёт 3-5 с поверх сцены; по нулю рестарт с нуля (скорер тоже сбрасывается).</summary>
+        /// <summary>Попытка (S14): пауза видео и обратный отсчёт 3-5 с поверх сцены; по нулю рестарт с нуля (скорер тоже сбрасывается).
+        /// Кнопка «Ещё раз» финального экрана (T20) идёт сюда же: оверлей прячится до отсчёта.</summary>
         private void StartAttempt()
         {
+            HideFinalOverlay(); // T20: новый заход — финального экрана быть не должно
             var idx = countdownBox.SelectedIndex;
             countdownRemaining = idx == 0 ? 3 : idx == 1 ? 4 : 5;
             countdownText.Text = countdownRemaining.ToString(CultureInfo.InvariantCulture);
@@ -1288,6 +1358,33 @@ namespace PlayerTrial
             countdownText.Visibility = Visibility.Collapsed;
             RestartFromZero();
         }
+
+        /// <summary>
+        /// Финальный экран итогов трека (T20, аудит P1.9): «Трек пройден», итоговый процент (Total01,
+        /// крупно), грубые ошибки, среднее покрытие за трек (TrialScore.Coverage — последний кадр, поэтому
+        /// среднее копится по оценённым кадрам) и длительность (ClockSeconds на момент MediaEnded).
+        /// Без оценки (lastScore null: --no-sensor, нет человека) не показывается — вызов без обеих кнопок.
+        /// </summary>
+        private void ShowFinalOverlay()
+        {
+            var score = lastScore;
+            if (score == null)
+            {
+                return;
+            }
+
+            var inv = CultureInfo.InvariantCulture;
+            finalTotal.Text = (score.Total01 * 100).ToString("0", inv) + "%";
+            var coverage = coverageCount > 0 ? coverageSum / coverageCount : score.Coverage;
+            finalStats.Text = "Грубые ошибки: " + score.Errors.ToString(inv) + Environment.NewLine
+                + "Покрытие: " + (coverage * 100).ToString("0", inv) + "%" + Environment.NewLine
+                + "Длительность: " + TimeSpan.FromSeconds(finalDurationSec).ToString(@"mm\:ss", inv);
+            finalCard.Visibility = Visibility.Visible;
+        }
+
+        /// <summary>Прятать финальный экран: повтор («Ещё раз», R, Space на конце) и «Закрыть»;
+        /// смена ракурса оверлей сознательно не прячет (T20, решение ПМ).</summary>
+        private void HideFinalOverlay() => finalCard.Visibility = Visibility.Collapsed;
 
         /// <summary>Ракурсы (S13): кольцо кнопок c01..c09 вокруг «танцора», только камеры с существующим файлом.</summary>
         private void PopulateAngles(string videoPath)
@@ -1445,9 +1542,12 @@ namespace PlayerTrial
 
         private void RestartFromZero()
         {
+            HideFinalOverlay(); // T20: R, Space на конце, конец отсчёта попытки — финал прячет рестарт
             paused = false;
             lastScore = null;
             lastScoredT = double.NaN;
+            coverageSum = 0;
+            coverageCount = 0;
             if (track != null)
             {
                 scorer = new TrialScorer(track, trialParams);
