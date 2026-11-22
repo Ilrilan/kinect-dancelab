@@ -172,19 +172,25 @@ namespace PlayerTrial
         // калибровка: медианы длин костей по первым секундам живого скелета, потом фиксированы
         private const double CalibrationSeconds = 5.0;
 
-        // пол сцены (S15): высоты лодыжек ближайшего пользователя, скользящее окно, оценка — 2-й перцентиль
+        // пол сцены (S15 + T17): валидный FloorY Kinect-кадра приоритетен, fallback — лодыжки
+        // (2-й перцентиль высот, скользящее окно)
         private const int FloorSampleCap = 300;
         private const int FloorMinSamples = 30;
-        private const int FloorRecalcTicks = 30; // пересчёт не чаще раза в секунду (тики по 33 мс)
+        private const int FloorRecalcTicks = 30; // пересчёт по лодыжкам не чаще раза в секунду (тики по 33 мс)
+        private const double KinectFloorAlpha = 0.3; // сглаживание FloorY на тик (T17)
         private static readonly string[][] AnkleNames =
         {
             new[] { "AnkleLeft", "LeftAnkle", "ankle_l" },
             new[] { "AnkleRight", "RightAnkle", "ankle_r" },
         };
         private readonly List<double> floorAnkleHeights = new List<double>();
-        private double floorYm;
-        private bool floorReady;
+        private double ankleFloorYm;   // 2-й перцентиль лодыжек (S15)
+        private bool ankleReady;
+        private double floorYm;        // итоговый пол сцены: FloorY трекера или ankleFloorYm
+        private FloorSource floorSource = FloorSource.Estimating;
         private long lastFloorSampleUs = -1;
+        private readonly object floorYSync = new object();
+        private double? rawFloorY; // FloorY последнего сырого кадра сенсора (T17)
         private readonly List<double> calArmLU = new List<double>();
         private readonly List<double> calArmLL = new List<double>();
         private readonly List<double> calArmRU = new List<double>();
@@ -501,9 +507,10 @@ namespace PlayerTrial
         private void OnTick()
         {
             tick++;
+            UpdateFloor(); // пол сцены (T17): FloorY Kinect приоритетен, сглаживание 0.3 на тик
             if (tick % FloorRecalcTicks == 0)
             {
-                RecalcFloor(); // пол сцены (S15): не чаще раза в секунду
+                RecalcFloor(); // пол по лодыжкам (S15, fallback): не чаще раза в секунду
             }
 
             if (mode == AppMode.Scene)
@@ -967,13 +974,14 @@ namespace PlayerTrial
             floorAnkleHeights.Add(best);
         }
 
-        /// <summary>Оценка пола (S15): 2-й перцентиль окна лодыжек; пока меньше 30 значений — floorYm = 0.</summary>
+        /// <summary>Оценка пола по лодыжкам (S15, fallback T17): 2-й перцентиль окна; пока меньше 30 значений — не готово.
+        /// Считается всегда: когда FloorY Kinect исчезает, fallback подхватывается без паузы.</summary>
         private void RecalcFloor()
         {
             if (floorAnkleHeights.Count < FloorMinSamples)
             {
-                floorReady = false;
-                floorYm = 0;
+                ankleReady = false;
+                ankleFloorYm = 0;
                 return;
             }
 
@@ -981,12 +989,54 @@ namespace PlayerTrial
             sorted.Sort();
             var idx = (int)Math.Ceiling(sorted.Count * 0.02) - 1;
             idx = Math.Max(0, Math.Min(sorted.Count - 1, idx));
-            floorYm = sorted[idx];
-            floorReady = true;
+            ankleFloorYm = sorted[idx];
+            ankleReady = true;
         }
 
-        private string FloorHudLine(CultureInfo inv) =>
-            floorReady ? "пол: " + floorYm.ToString("0.00", inv) + " м" : "пол: оцениваю";
+        /// <summary>FloorY последнего сырого кадра сенсора (поток трекера): реконструктор строит новые
+        /// SkeletonFrame и поле не переносит, поэтому пол берётся с первоисточника (T17).</summary>
+        private void TrackFloorY(SkeletonFrame f)
+        {
+            lock (floorYSync)
+            {
+                rawFloorY = f.FloorY;
+            }
+        }
+
+        /// <summary>Итоговый пол сцены (T17): FloorY Kinect (валидный, |y| &lt; 3 м) приоритетен над лодыжками;
+        /// сглаживание 0.3 на тик для стабильности HUD и призрака, первое валидное значение принимается сразу.</summary>
+        private void UpdateFloor()
+        {
+            double? frameFloorY;
+            lock (floorYSync)
+            {
+                frameFloorY = rawFloorY;
+            }
+
+            var wasTracker = floorSource == FloorSource.Tracker;
+            floorSource = SkeletonFrame.PickFloorSource(frameFloorY, ankleReady);
+            if (floorSource == FloorSource.Tracker && frameFloorY.HasValue)
+            {
+                floorYm = wasTracker ? floorYm + (KinectFloorAlpha * (frameFloorY.Value - floorYm)) : frameFloorY.Value;
+            }
+            else
+            {
+                floorYm = ankleFloorYm;
+            }
+        }
+
+        private string FloorHudLine(CultureInfo inv)
+        {
+            switch (floorSource)
+            {
+                case FloorSource.Tracker:
+                    return "пол: " + floorYm.ToString("0.00", inv) + " м (kinect)";
+                case FloorSource.Ankles:
+                    return "пол: " + floorYm.ToString("0.00", inv) + " м (лодыжки)";
+                default:
+                    return "пол: оцениваю";
+            }
+        }
 
         /// <summary>Режим «Сцена сенсора» (S16): скелеты всех людей в оба вида, статистика потока; без сессии — «сенсор не запущен».</summary>
         private void UpdateScene()
@@ -1023,7 +1073,7 @@ namespace PlayerTrial
             sceneTop.TrackerId = trackerId;
             sceneFront.SetUsers(users);
             sceneTop.SetUsers(users);
-            sceneFront.SetFloor(floorYm, floorReady);
+            sceneFront.SetFloor(floorYm, floorSource != FloorSource.Estimating);
             if (tick % 6 == 0)
             {
                 var inv = CultureInfo.InvariantCulture;
@@ -1465,6 +1515,7 @@ namespace PlayerTrial
             else
             {
                 session = created;
+                created.Source.FrameReceived += TrackFloorY; // T17: FloorY с сырых кадров сенсора
                 sensorButton.Content = "Стоп сенсора";
                 status.Text = "Идёт проба: " + opts.Seq + ", трекер " + key + ".";
             }
@@ -1483,6 +1534,15 @@ namespace PlayerTrial
             StopRecorder();
             var old = session;
             session = null;
+            if (old != null)
+            {
+                old.Source.FrameReceived -= TrackFloorY;
+            }
+
+            lock (floorYSync)
+            {
+                rawFloorY = null; // сенсор остановлен — пол снова от лодыжек или «оцениваю»
+            }
             await Task.Run(() =>
             {
                 try
@@ -1511,9 +1571,15 @@ namespace PlayerTrial
             timer.Stop();
             countdownTimer.Stop();
             StopRecorder();
+            var old = session;
+            if (old != null)
+            {
+                old.Source.FrameReceived -= TrackFloorY;
+            }
+
             try
             {
-                session?.Dispose();
+                old?.Dispose();
             }
             catch (Exception)
             {
@@ -1521,6 +1587,10 @@ namespace PlayerTrial
             }
 
             session = null;
+            lock (floorYSync)
+            {
+                rawFloorY = null;
+            }
         }
 
         private string? FindVideo(string? fileName)

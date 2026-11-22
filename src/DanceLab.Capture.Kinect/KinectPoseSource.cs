@@ -292,6 +292,7 @@ namespace DanceLab.Capture.Kinect
 
                 var plane = frame.FloorClipPlane;
                 double[]? floor = (plane.X == 0 && plane.Y == 0 && plane.Z == 0 && plane.W == 0) ? null : new double[] { plane.X, plane.Y, plane.Z, plane.W };
+                var floorY = SceneInfo.FloorYFromPlane(floor); // trial T17: высота пола сенсора, сменилась — пересчиталась
                 Dictionary<string, object>? other = null;
                 if (!intrinsicsSent)
                 {
@@ -327,7 +328,7 @@ namespace DanceLab.Capture.Kinect
                 }
 
                 var scene = (floor == null && other == null) ? null : new SceneInfo(floor, other);
-                handler(new SkeletonFrame((long)(frame.RelativeTime.TotalMilliseconds * 1000.0), host, users, scene));
+                handler(new SkeletonFrame((long)(frame.RelativeTime.TotalMilliseconds * 1000.0), host, users, scene, floorY));
             }
         }
 

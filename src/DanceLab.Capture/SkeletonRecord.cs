@@ -255,10 +255,10 @@ namespace DanceLab.Capture
             }
 
             json.WriteEndArray();
-            if (f.Scene != null)
+            if (f.Scene != null || f.FloorY != null)
             {
                 json.WriteStartObject("scene");
-                if (f.Scene.FloorPlane != null)
+                if (f.Scene?.FloorPlane != null)
                 {
                     json.WriteStartArray("floorPlane");
                     foreach (var v in f.Scene.FloorPlane)
@@ -269,10 +269,28 @@ namespace DanceLab.Capture
                     json.WriteEndArray();
                 }
 
-                if (f.Scene.Other != null)
+                // FloorY (trial T17) едет внутри scene.other: схема capture-record не допускает
+                // новых полей кадра верхнего уровня (additionalProperties: false), other открыт.
+                IReadOnlyDictionary<string, object>? other = f.Scene?.Other;
+                if (f.FloorY != null)
+                {
+                    var merged = new Dictionary<string, object>();
+                    if (other != null)
+                    {
+                        foreach (var kv in other)
+                        {
+                            merged[kv.Key] = kv.Value;
+                        }
+                    }
+
+                    merged["floorY"] = f.FloorY;
+                    other = merged;
+                }
+
+                if (other != null)
                 {
                     json.WritePropertyName("other");
-                    JsonSerializer.Serialize(json, f.Scene.Other);
+                    JsonSerializer.Serialize(json, other);
                 }
 
                 json.WriteEndObject();
@@ -428,11 +446,19 @@ namespace DanceLab.Capture
                 scene = new SceneInfo(floor, other);
             }
 
+            // FloorY (trial T17) читается из scene.other; в старых записях поля нет — null.
+            double? floorY = null;
+            if (scene?.Other != null && scene.Other.TryGetValue("floorY", out var floorValue) && floorValue is double d)
+            {
+                floorY = d;
+            }
+
             return new SkeletonFrame(
                 root.GetProperty("deviceTimeUs").GetInt64(),
                 root.GetProperty("hostTimeUtcTicks").GetInt64(),
                 users,
-                scene);
+                scene,
+                floorY);
         }
     }
 }

@@ -89,22 +89,85 @@ namespace DanceLab.Capture
         public double[]? FloorPlane { get; }
 
         public IReadOnlyDictionary<string, object>? Other { get; }
+
+        /// <summary>
+        /// Высота пола в системе координат сенсора (м) из плоскости в hessian-форме (trial T17):
+        /// точка пола на оси Y при x=z=0, то есть y = -d/b. Kinect FloorClipPlane (x,y,z) — нормаль,
+        /// w — расстояние до плоскости (Microsoft.Kinect.xml). Нулевая плоскость (пол не измерен),
+        /// b≈0 (вертикальная плоскость — проекции на Y нет) или кривая длина — null.
+        /// </summary>
+        public static double? FloorYFromPlane(double[]? floorPlane)
+        {
+            if (floorPlane == null || floorPlane.Length != 4)
+            {
+                return null;
+            }
+
+            var a = floorPlane[0];
+            var b = floorPlane[1];
+            var c = floorPlane[2];
+            var d = floorPlane[3];
+            if (a == 0 && b == 0 && c == 0 && d == 0)
+            {
+                return null;
+            }
+
+            return Math.Abs(b) < 1e-6 ? null : -d / b;
+        }
+    }
+
+    /// <summary>Источник оценки пола живой сцены (trial T17).</summary>
+    public enum FloorSource
+    {
+        /// <summary>Данных нет — «оцениваю».</summary>
+        Estimating,
+
+        /// <summary>Пол от трекера: SkeletonFrame.FloorY из FloorClipPlane (Kinect).</summary>
+        Tracker,
+
+        /// <summary>Оценка по лодыжкам, 2-й перцентиль (trial S15, fallback).</summary>
+        Ankles,
     }
 
     public sealed class SkeletonFrame
     {
-        public SkeletonFrame(long deviceTimeUs, long hostTimeUtcTicks, IReadOnlyList<TrackedUser> users, SceneInfo? scene = null)
+        public SkeletonFrame(long deviceTimeUs, long hostTimeUtcTicks, IReadOnlyList<TrackedUser> users, SceneInfo? scene = null, double? floorY = null)
         {
             DeviceTimeUs = deviceTimeUs;
             HostTimeUtcTicks = hostTimeUtcTicks;
             Users = users;
             Scene = scene;
+            FloorY = floorY;
         }
 
         public long DeviceTimeUs { get; }
         public long HostTimeUtcTicks { get; }
         public IReadOnlyList<TrackedUser> Users { get; }
         public SceneInfo? Scene { get; }
+
+        /// <summary>
+        /// Высота пола в системе координат сенсора, м (trial T17): KinectPoseSource считает её из
+        /// FloorClipPlane каждого BodyFrame (SceneInfo.FloorYFromPlane), Nuitrack пола не даёт — null.
+        /// В записи живёт внутри scene.other: схема capture-record не допускает новых полей кадра
+        /// верхнего уровня; старые записи без поля читаются как null.
+        /// </summary>
+        public double? FloorY { get; }
+
+        /// <summary>
+        /// Выбор пола живой сцены (trial T17/S15): валидный FloorY последнего кадра приоритетнее
+        /// оценки по лодыжкам. Валидность — конечное число в разумном диапазоне (|y| меньше 3 м;
+        /// NaN и бесконечность отсекаются сравнением). FloorY нет (Nuitrack, старые записи) —
+        /// готовая оценка по лодыжкам, иначе «оцениваю».
+        /// </summary>
+        public static FloorSource PickFloorSource(double? frameFloorY, bool anklesReady)
+        {
+            if (frameFloorY.HasValue && Math.Abs(frameFloorY.Value) < 3.0)
+            {
+                return FloorSource.Tracker;
+            }
+
+            return anklesReady ? FloorSource.Ankles : FloorSource.Estimating;
+        }
     }
 
     /// <summary>Кадр глубины или цвета как отдал трекер, без преобразования. Буфер принадлежит получателю.</summary>
