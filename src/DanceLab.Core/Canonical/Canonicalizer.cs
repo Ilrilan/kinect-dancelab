@@ -7,7 +7,8 @@ namespace DanceLab.Core.Canonical
     /// <summary>
     /// Перевод достроенной позы трекера в канонический вид (canonical-pose S1, S3, S7, S9, S10; player/trial Contract).
     /// Конвенции совпадают с tools/aist_import/canonical_export.py (эталонный путь пробы) знак в знак:
-    /// вверх = normalize(шея − корень) (при потере шеи — грудь), бок = линия бёдер в сторону левого бедра,
+    /// вверх = normalize(шея − корень), где «шея» — середина плеч (T13: конвенция эталона; при потере
+    /// любого плеча — сустав Neck трекера, затем грудь), бок = линия бёдер в сторону левого бедра,
     /// ортогонализованная по вверх, вперёд = бок × вверх (правая тройка); координаты костей (бок, вверх, вперёд);
     /// heading = atan2(вперёд.x, вперёд.z). Имена суставов — как у реконструкции: Kinect (ShoulderLeft),
     /// Nuitrack (LeftShoulder) и канонические (shoulder_l); chest/neck/head приходят от трекеров напрямую
@@ -81,13 +82,19 @@ namespace DanceLab.Core.Canonical
                 rootOk = true;
             }
 
-            // ось вверх торса (S7): от корня к шее, при потере шеи — к груди
+            // ось вверх торса (S7): от корня к «шее». «Шея» — середина плеч (конвенция эталонного
+            // импортёра canonical_export.py: neck = (lsho + rsho) / 2, в COCO-17 сустава шеи нет);
+            // при потере любого плеча — сустав Neck трекера, при потере и шеи — грудь
             var up = new Vec3(0, 1, 0);
             var upOk = false;
             if (rootOk)
             {
                 Vec3 source = default;
-                if (Usable(neck))
+                if (Usable(j[ShoulderL]) && Usable(j[ShoulderR]))
+                {
+                    source = (P(j[ShoulderL]!) + P(j[ShoulderR]!)) * 0.5;
+                }
+                else if (Usable(neck))
                 {
                     source = P(neck!);
                 }

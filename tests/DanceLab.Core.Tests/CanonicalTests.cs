@@ -231,6 +231,80 @@ namespace DanceLab.Core.Tests
             Assert.True(f.TorsoTurnRad == 0.0 || Math.Abs(f.TorsoTurnRad) < 1e-6, "наклон вперёд не должен давать скрутку");
         }
 
+        /// <summary>T13/P0.1: «шея» для оси вверх — середина плеч (конвенция эталона canonical_export.py);
+        /// сустав Neck трекера, стоящий выше середины плеч, фрейм не сдвигает.</summary>
+        [Fact]
+        public void NeckJointAboveShouldersDoesNotAffectTorsoFrame()
+        {
+            // наклонённая фигура, Neck поднят на 10 см выше середины плеч: (0, 1.50, 0.45)
+            var withNeck = new List<ReconstructedJoint>();
+            foreach (var j in CanonSynth.FigureLean().Joints)
+            {
+                withNeck.Add(j.Name == "Neck"
+                    ? new ReconstructedJoint("Neck", 0.0, 1.50, 0.45, j.Origin, j.Confidence)
+                    : j);
+            }
+
+            // та же фигура вовсе без сустава Neck
+            var withoutNeck = new List<ReconstructedJoint>();
+            foreach (var j in withNeck)
+            {
+                if (j.Name != "Neck")
+                {
+                    withoutNeck.Add(j);
+                }
+            }
+
+            var a = Canonicalizer.ToCanonical(new ReconstructedPose(0, withNeck), CanonSynth.Bones(), CanonSynth.Leg);
+            var b = Canonicalizer.ToCanonical(new ReconstructedPose(0, withoutNeck), CanonSynth.Bones(), CanonSynth.Leg);
+            for (var i = 0; i < CanonicalFrame.BoneCount * 3; i++)
+            {
+                Assert.Equal(a.Bones[i], b.Bones[i], 9);
+            }
+
+            for (var i = 0; i < CanonicalFrame.BoneCount; i++)
+            {
+                Assert.Equal(a.BoneValid[i], b.BoneValid[i]);
+            }
+
+            Assert.Equal(a.TorsoLeanRad, b.TorsoLeanRad, 9);
+            Assert.Equal(a.TorsoTurnRad, b.TorsoTurnRad, 9);
+            Assert.Equal(a.HeadingRad, b.HeadingRad, 9);
+
+            // ось вверх — от корня к середине плеч (наклон торса 45°); от Neck было бы atan2(0.45, 0.55) ≈ 0.686
+            Assert.Equal(Math.PI / 4.0, a.TorsoLeanRad, 9);
+        }
+
+        /// <summary>T13/P0.1: без валидных плеч ось вверх падает на сустав Neck (прежнее поведение), не на грудь.</summary>
+        [Fact]
+        public void WithoutShouldersUpAxisFallsBackToNeckJoint()
+        {
+            // фигура без плеч: Neck (0,1.45,0.5) даёт lean 45°, грудь (0,1.25,0.35) дала бы atan2(0.35,0.30) ≈ 0.862
+            var noShoulders = new List<ReconstructedJoint>();
+            foreach (var j in CanonSynth.FigureLean().Joints)
+            {
+                if (j.Name != "ShoulderLeft" && j.Name != "ShoulderRight")
+                {
+                    noShoulders.Add(j);
+                }
+            }
+
+            var f = Canonicalizer.ToCanonical(new ReconstructedPose(0, noShoulders), CanonSynth.Bones(), CanonSynth.Leg);
+            Assert.Equal(Math.PI / 4.0, f.TorsoLeanRad, 9);
+
+            // плечи есть, но помечены Invalid — тоже fallback на Neck
+            var invalidShoulders = new List<ReconstructedJoint>();
+            foreach (var j in CanonSynth.FigureLean().Joints)
+            {
+                invalidShoulders.Add(j.Name == "ShoulderLeft" || j.Name == "ShoulderRight"
+                    ? new ReconstructedJoint(j.Name, j.X, j.Y, j.Z, JointOrigin.Invalid, 0)
+                    : j);
+            }
+
+            var f2 = Canonicalizer.ToCanonical(new ReconstructedPose(0, invalidShoulders), CanonSynth.Bones(), CanonSynth.Leg);
+            Assert.Equal(Math.PI / 4.0, f2.TorsoLeanRad, 9);
+        }
+
         /// <summary>Инвариант trial S6: поворот в комнате и перемещение не меняют направления костей; поворот меняет heading.</summary>
         [Fact]
         public void ToCanonicalIsInvariantUnderWorldRotationAndTranslation()
