@@ -9,6 +9,7 @@ using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using DanceLab.Capture;
 using DanceLab.Core.Reconstruction;
+using DanceLab.View;
 
 namespace SensorView
 {

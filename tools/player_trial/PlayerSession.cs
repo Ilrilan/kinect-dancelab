@@ -5,6 +5,7 @@ using DanceLab.Capture;
 using DanceLab.Capture.Kinect;
 using DanceLab.Capture.Nuitrack;
 using DanceLab.Core.Reconstruction;
+using DanceLab.View;
 
 namespace PlayerTrial
 {

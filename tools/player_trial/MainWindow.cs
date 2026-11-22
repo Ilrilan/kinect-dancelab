@@ -15,6 +15,7 @@ using System.Windows.Threading;
 using DanceLab.Capture;
 using DanceLab.Core.Canonical;
 using DanceLab.Core.Reconstruction;
+using DanceLab.View;
 
 namespace PlayerTrial
 {

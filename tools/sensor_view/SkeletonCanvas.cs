@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
 using DanceLab.Capture;
+using DanceLab.View;
 
 namespace SensorView
 {
