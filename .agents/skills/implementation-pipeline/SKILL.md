@@ -21,7 +21,7 @@ The main session is the PM (owner's order, 2026-11-22: «ты менеджер�
 
 ## Autonomy completion report (owner's order, 2026-11-22)
 
-When the PM reports an autonomous assignment as done, the chat report MUST attach screenshots of every UI change: PNG artifacts produced by executors (`--shot` runs under `data/preview/`), one per changed mode or screen, linked as local Markdown links to absolute paths. A UI change is not reportable as complete without its screenshot; if the executor produced none, dispatch a shot run before reporting.
+When the PM reports an autonomous assignment as done, the chat report MUST attach screenshots of every UI change: PNG artifacts produced by executors (`--shot` runs under `data/preview/`), one per changed mode or screen. Attach them inline so the owner can zoom (they often watch via phone remote control): embed as Markdown images (Read the PNG to get a CDN URL) and/or a zoomable inline viewer (visualize skill, fragment with zoom controls, images as data URIs under 1 MB); local Markdown file links alone are not enough — the built-in viewer has no zoom. A UI change is not reportable as complete without its screenshot; if the executor produced none, dispatch a shot run before reporting.
 
 ## PM prohibitions
 
