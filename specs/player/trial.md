@@ -168,6 +168,6 @@ WPF (`tools/player_trial`, net48, WinExe, код-стиль sensor_view без X
 - [x] T18 P1: статус калибровки длин ног в HUD: «калибрую / готово» (аудит P1.7)
 - [x] T19 P1: авто-рестарт сессии Nuitrack-триала (3 минуты) с предупреждением (аудит P1.8)
 - [x] T20 P1: финальный экран итогов трека: процент, ошибки, приглашение к реплею (аудит P1.9)
-- [ ] T21 P2: вынос общего кода player_trial/sensor_view в общую библиотеку (SkeletonCanvas/GhostCanvas, LiveSession/PlayerSession, Topology) — дубль-копии осознанно делались для пробы (аудит P2.11)
+- [x] T21 P2: вынос общего кода player_trial/sensor_view в общую библиотеку (SkeletonCanvas/GhostCanvas, LiveSession/PlayerSession, Topology) — дубль-копии осознанно делались для пробы (аудит P2.11)
 - [ ] T22 P2: тестируемость UI-логики: авто-кадр/панорама/состояние камер вынести из MainWindow в тестируемый класс с юнит-тестами (аудит P2.12)
 - [ ] T23 P2: медиа-quirks MediaElement зафиксировать регрессионными сценариями (рестарт после конца, NaturalDuration, SpeedRatio на лету) (аудит P2.13)
