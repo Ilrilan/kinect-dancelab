@@ -15,7 +15,7 @@ namespace DanceLab.View.Tests
         private const double Eps = 1e-9;
 
         /// <summary>Один тик Update с окном 640x360, видео 640x360, слайдер 1.0 (без масштаба).</summary>
-        private static (double Zoom, double PanX, double PanY) Tick(
+        private static (double Zoom, double PanX, double PanY, ScreenBox Box) Tick(
                 FrameFollower f, double t, string camera = "c01", double slider = 1.0)
         {
             return f.Update(t, camera, 640, 360, 640, 360, slider);
@@ -35,14 +35,13 @@ namespace DanceLab.View.Tests
         }
 
         /// <summary>Гоняет Update до сходимости сглаживания (один и тот же t).</summary>
-        private static (double Zoom, double PanX, double PanY) Converge(
-                FrameFollower f, double t, string camera = "c01", int ticks = 400)
+        private static (double Zoom, double PanX, double PanY, ScreenBox Box) Converge(
+                FrameFollower f, double t, string camera = "c01", double slider = 1.0, int ticks = 400)
         {
-            var last = (Zoom: 0.0, PanX: 0.0, PanY: 0.0);
+            var last = (Zoom: 0.0, PanX: 0.0, PanY: 0.0, Box: default(ScreenBox));
             for (var i = 0; i < ticks; i++)
             {
-                var r = Tick(f, t, camera);
-                last = (r.Zoom, r.PanX, r.PanY);
+                last = Tick(f, t, camera, slider);
             }
 
             return last;
@@ -89,12 +88,17 @@ namespace DanceLab.View.Tests
         }
 
         [Fact]
-        public void Clamps_ZoomBetween1And3_PanWithinContent()
+        public void Clamps_ZoomBetween1And9_PanWithinContent()
         {
-            // (в) крошечный танцор: цель зума 256 -> кламп сверху 3
+            // (в) крошечный танцор: цель авто-зума упирается во внутренний кламп 3, слайдер 3 ->
+            // итоговый зум в пределе MaxTotalZoom = 9 (T24: 3.0 x 3.0; прежний предел был 3)
             var tiny = new FrameFollower(SingleCam(new[] { 1.0, 319.0, 179.0, 321.0, 181.0 }));
-            var rt = Converge(tiny, 1.0);
-            Assert.Equal(3.0, rt.Zoom, 9);
+            var rt = Converge(tiny, 1.0, slider: 3.0);
+            Assert.Equal(FrameFollower.MaxTotalZoom, rt.Zoom, 9);
+
+            // тот же крошечный танцор со слайдером 1: внутренний кламп 1..3 проходит наружу как 3
+            var rt1 = Converge(new FrameFollower(SingleCam(new[] { 1.0, 319.0, 179.0, 321.0, 181.0 })), 1.0);
+            Assert.Equal(3.0, rt1.Zoom, 9);
 
             // гигантский танцор (шире и выше окна): цель ~0.54 -> кламп снизу 1
             var huge = new FrameFollower(SingleCam(new[] { 1.0, -50.0, -50.0, 690.0, 410.0 }));
@@ -102,7 +106,7 @@ namespace DanceLab.View.Tests
             Assert.Equal(1.0, rh.Zoom, 9);
 
             // панорама не выходит за контент при любом раскладе: |Pan| <= maxPan(z)
-            foreach (var r in new[] { rt, rh })
+            foreach (var r in new[] { rt, rt1, rh })
             {
                 var maxPanX = Math.Max(0.0, (r.Zoom * 640.0 - 640.0) / 2.0);
                 var maxPanY = Math.Max(0.0, (r.Zoom * 360.0 - 360.0) / 2.0);
@@ -264,6 +268,34 @@ namespace DanceLab.View.Tests
             // панорама после сброса стартует с нуля: один тик = 0.2 цели от зума этого тика (2.89)
             Assert.Equal(0.2 * (zAfterReset * (640.0 / 2 - 220.0)), after.PanX, 9);
             Assert.True(Math.Abs(after.PanX) < Math.Abs(converged.PanX) - Eps);
+        }
+
+        [Fact]
+        public void CenteredDancer_BoxCentredInWindow_SizeIsPaddedBboxTimesScaleZoom()
+        {
+            // (T24) рамка танцора в пикселях окна: s = 1 (окно = источник 640x360), z сошёлся
+            // к цели авто-зума. Танцор в центре по X и PanX = 0 -> CenterX = центр окна;
+            // Width = ширина bbox * s * z, Height = (высота bbox + ShoePadRows) * s * z
+            var f = new FrameFollower(SingleCam(new[] { 1.0, 250.0, 100.0, 390.0, 260.0 }));
+            var z = ZoomTarget(250, 100, 390, 260);
+
+            var r = Converge(f, 1.0);
+
+            Assert.True(r.Box.IsValid);
+            Assert.Equal(320.0, r.Box.CenterX, 9);
+            Assert.Equal((390.0 - 250.0) * z, r.Box.Width, 9);
+            Assert.Equal((260.0 + FrameFollower.ShoePadRows - 100.0) * z, r.Box.Height, 9);
+        }
+
+        [Fact]
+        public void MissingCamera_BoxIsInvalid()
+        {
+            // (T24) камеры/данных нет: рамка = default(ScreenBox), IsValid == false
+            var f = new FrameFollower(SingleCam(new[] { 1.0, 250.0, 100.0, 390.0, 260.0 }));
+
+            var r = Tick(f, 1.0, camera: "c99");
+
+            Assert.False(r.Box.IsValid);
         }
     }
 }

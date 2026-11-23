@@ -23,6 +23,7 @@ namespace PlayerTrial
         private static readonly Pen GridPen = Freeze(new Pen(new SolidColorBrush(Color.FromRgb(0x2c, 0x2e, 0x36)), 1));
         private static readonly Pen FloorPen = Freeze(new Pen(new SolidColorBrush(Color.FromRgb(0x4c, 0xaf, 0x50)), 2));
         private static readonly Brush LabelBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x9a, 0xa0, 0xaa)));
+        private static readonly Brush CaptionPillBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xB0, 0x10, 0x11, 0x14)));
         private static readonly Color Gold = Colors.Gold;
 
         /// <summary>Палитра цветов людей по id (4 цвета, id берётся по модулю).</summary>
@@ -120,12 +121,13 @@ namespace PlayerTrial
             {
                 // подпись панели прижата к правому верхнему углу: слева она пересекается с осевой меткой «5 м»
                 var ft = MakeText(title, 13, LabelBrush);
-                dc.DrawText(ft, new Point(w - ft.Width - 8, 6));
+                Caption(dc, ft, w - ft.Width - 12, 10);
                 DrawTop(dc, w, h);
             }
             else
             {
-                Text(dc, title, 8, 6, 13, LabelBrush);
+                var ft = MakeText(title, 13, LabelBrush);
+                Caption(dc, ft, 12, 10);
                 DrawFront(dc, w, h);
             }
         }
@@ -156,6 +158,24 @@ namespace PlayerTrial
                 Text(dc, "пол " + floorYm.ToString("0.00", CultureInfo.InvariantCulture) + " м", 6, floorPx - 16, 11, FloorPen.Brush);
             }
 
+            // масштабные метки высоты (S29): 0..3 м от пола вверх, пропускаем метки под подписью панели или у нижней кромки
+            for (var m = 0; m <= 3; m++)
+            {
+                // при готовой оценке пола нулевую линию уже подписывает зелёная метка «пол X.XX м»
+                if (m == 0 && floorReady)
+                {
+                    continue;
+                }
+
+                var y = floorPx - (m * scale);
+                if (y - 14 < 36 || y > h - 6)
+                {
+                    continue;
+                }
+
+                Text(dc, m.ToString(CultureInfo.InvariantCulture) + " м", 10, y - 14, 11, LabelBrush);
+            }
+
             foreach (var u in users)
             {
                 DrawUser(dc, u.id, u.pose, (x, y) => new Point(cx + (sign * x * scale), floorPx - (y * scale)));
@@ -174,7 +194,7 @@ namespace PlayerTrial
             {
                 var y = originY - (m * scale);
                 dc.DrawLine(GridPen, new Point(0, y), new Point(w, y));
-                Text(dc, m + " м", 4, y - 14, 11, LabelBrush);
+                Text(dc, m + " м", 10, y - 14, 11, LabelBrush);
             }
 
             for (var m = -2; m <= 2; m++)
@@ -258,6 +278,13 @@ namespace PlayerTrial
         private FormattedText MakeText(string text, double size, Brush brush)
         {
             return new FormattedText(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        }
+
+        /// <summary>Подпись вида (S29): пилюля-подложка скруглённым прямоугольником, чтобы текст читался поверх линий сетки.</summary>
+        private void Caption(DrawingContext dc, FormattedText ft, double x, double y)
+        {
+            dc.DrawRoundedRectangle(CaptionPillBrush, null, new Rect(x - 8, y - 4, ft.Width + 16, ft.Height + 8), 4, 4);
+            dc.DrawText(ft, new Point(x, y));
         }
 
         private void Text(DrawingContext dc, string text, double x, double y, double size, Brush brush)

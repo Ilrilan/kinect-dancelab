@@ -74,7 +74,8 @@ namespace DanceLab.View
     /// текущей камеры. zAuto = clamp(min(winW/(bw+pad), winH/(bh+pad)), 1, 3), pad = 25% габарита:
     /// вертикальный паддинг асимметричный (верхней кромке 40%, нижней 60%), низ bbox расширен
     /// на ShoePadRows строк (обувь ниже лодыжек-ключевых точек), окно панели в пикселях
-    /// источника = win/(s); итог z = zAuto * слайдер (сглаженные 0.2/тик). Окно центрируется
+    /// источника = win/(s); итог z = zAuto * слайдер (сглаженные 0.2/тик), предел
+    /// MaxTotalZoom = 9.0 (3.0 авто × 3.0 слайдер). Окно центрируется
     /// на сглаженном центре паддингованного bbox со сдвигом вверх 7% высоты окна (запас голове):
     /// Tx = -z*s*(cu - W/2), Ty = -z*s*(cv_цель - H/2). Клампы панорамы: окно не выходит за края
     /// контента. Нет камеры/данных — fallback: база zAuto = 1.6, центр = центр кадра.
@@ -87,6 +88,7 @@ namespace DanceLab.View
         public const double BboxWindowSec = 0.7;    // расширение bbox по времени (гладкость, без пампинга на махах)
         public const double ShoePadRows = 75.0;     // обувь ниже лодыжек-ключевых точек, строк источника (худший кадр c05: выпад ~66)
         public const double HeadShiftFrac = 0.07;   // сдвиг центра окна вверх (запас голове), доли высоты окна
+        public const double MaxTotalZoom = 9.0;     // предел итогового зума: 3.0 (авто) × 3.0 (слайдер)
 
         private readonly Dictionary<string, CamTrack> cameras;
         private double smoothedZoomAuto = AutoZoomFallback;
@@ -112,9 +114,11 @@ namespace DanceLab.View
         /// Один тик следящего кадра: t — текущий момент (с), camera — ключ камеры cams.json,
         /// windowW/windowH — окно панели (ширина контента и высота панели, пиксели элемента),
         /// videoW/videoH — размер источника, sliderZoom — множитель слайдера (округлён и зажат
-        /// 1..3 вызывающим). Возвращает итоговый зум (единый по X/Y) и панораму в пикселях окна.
+        /// 1..3 вызывающим). Возвращает итоговый зум (единый по X/Y), панораму в пикселях окна
+        /// и рамку танцора ScreenBox в пикселях окна тем же отображением, которое окно применяет
+        /// к видео (масштаб z от центра элемента, затем панорама); без данных — default.
         /// </summary>
-        public (double Zoom, double PanX, double PanY) Update(
+        public (double Zoom, double PanX, double PanY, ScreenBox Box) Update(
                 double t, string? camera, double windowW, double windowH,
                 double videoW, double videoH, double sliderZoom)
         {
@@ -158,7 +162,7 @@ namespace DanceLab.View
             }
 
             smoothedZoomAuto += 0.2 * (zAutoTarget - smoothedZoomAuto);
-            var z = Math.Max(1.0, Math.Min(3.0, smoothedZoomAuto * sliderZoom));
+            var z = Math.Max(1.0, Math.Min(MaxTotalZoom, smoothedZoomAuto * sliderZoom));
 
             // панорама: окно центрируется на паддингованном bbox со сдвигом вверх 7% высоты окна
             var maxPanX = Math.Max(0.0, ((z * s * wSrc) - winW) / 2.0);
@@ -169,7 +173,25 @@ namespace DanceLab.View
 
             smoothedPanX += 0.2 * (targetX - smoothedPanX);
             smoothedPanY += 0.2 * (targetY - smoothedPanY);
-            return (z, smoothedPanX, smoothedPanY);
+
+            // рамка танцора в пикселях окна: то же отображение, которое окно применяет к видео
+            // (масштаб z от центра элемента, затем сдвиг на панораму; контент центрирован)
+            ScreenBox screenBox;
+            if (hasBox)
+            {
+                var vMaxPad = box.VMax + ShoePadRows;
+                screenBox = new ScreenBox(
+                        windowW / 2.0 + (box.UMin - videoW / 2.0) * s * z + smoothedPanX,
+                        windowH / 2.0 + (box.VMin - videoH / 2.0) * s * z + smoothedPanY,
+                        windowW / 2.0 + (box.UMax - videoW / 2.0) * s * z + smoothedPanX,
+                        windowH / 2.0 + (vMaxPad - videoH / 2.0) * s * z + smoothedPanY);
+            }
+            else
+            {
+                screenBox = default; // камеры/данных нет — рамки нет
+            }
+
+            return (z, smoothedPanX, smoothedPanY, screenBox);
         }
 
         /// <summary>Расширенный по времени bbox танцора текущей камеры; false, если камеры/данных нет.</summary>
