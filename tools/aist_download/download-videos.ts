@@ -1,6 +1,9 @@
 // Скачивание видео AIST для последовательностей, у которых есть motions.
 // Запуск (Node 24, типы вырезаются автоматически):
-//   node tools/aist_download/download-videos.ts [--bitrate 10M] [--concurrency 3]
+//   node tools/aist_download/download-videos.ts [--bitrate 10M] [--concurrency 3] [--list <файл>]
+// --list: файл списка последовательностей; в строке первый токен — имя (с cAll),
+//   остальное игнорируется; пустые строки и строки с # пропускаются; относительный
+//   путь отсчитывается от корня репозитория; умолчание lists/motions_have.txt.
 // Входы (все внутри data/aist, в git не попадают):
 //   lists/motions_have.txt              имена последовательностей из motions.zip
 //   lists/refined_<bitrate>_all_video_url.csv   список ссылок AIST
@@ -10,7 +13,7 @@
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, appendFileSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { basename, join } from 'node:path';
+import { basename, isAbsolute, join } from 'node:path';
 
 const args = process.argv.slice(2);
 const opt = (name: string, def: string): string => {
@@ -30,8 +33,21 @@ const lines = (path: string): string[] =>
     .map((s) => s.trim())
     .filter(Boolean);
 
+// список последовательностей: первый токен строки — имя, пустые и # пропускаются
+const listArg = opt('list', join(root, 'lists', 'motions_have.txt'));
+const listPath = isAbsolute(listArg) ? listArg : join(process.cwd(), listArg);
+if (!existsSync(listPath)) {
+  console.error(`list file not found: ${listPath}`);
+  process.exit(1);
+}
+const names = readFileSync(listPath, 'utf8')
+  .split(/\r?\n/)
+  .map((s) => s.trim())
+  .filter((s) => s && !s.startsWith('#'))
+  .map((s) => s.split(/\s+/)[0]);
+
 // gBR_sBM_cAll_d04_mBR0_ch01 -> gBR_sBM_c##_d04_mBR0_ch01 (девять ракурсов)
-const wanted = new Set(lines(join(root, 'lists', 'motions_have.txt')).map((n) => n.replace('_cAll_', '_c##_')));
+const wanted = new Set(names.map((n) => n.replace('_cAll_', '_c##_')));
 const urls = lines(join(root, 'lists', `refined_${bitrate}_all_video_url.csv`)).filter((u) => {
   const name = basename(u, '.mp4').replace(/_c0[1-9]_/, '_c##_');
   return wanted.has(name);
