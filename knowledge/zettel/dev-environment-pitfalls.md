@@ -1,6 +1,6 @@
 ---
 name: dev-environment-pitfalls
-description: "Ловушки окружения сборки DanceLab: dotnet test --no-build берёт устаревший binDebug вместо bindDebug; player_trial.exe снимать только из bin/x64/Debug/net48"
+description: "Ловушки окружения сборки DanceLab: dotnet test --no-build берёт устаревший bin/Debug вместо bin/x64/Debug; player_trial.exe запускать только из bin/x64/Debug/net48"
 metadata:
   node_type: memory
   type: project
