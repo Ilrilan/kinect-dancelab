@@ -1,0 +1,75 @@
+# Прогон по жанрам (specs/player/trial.md, S33): 60 последовательностей AIST++, имена с cAll.
+# Одна строка: имя, затем поля через пробел: жанр, уровень (basic/advanced), номер типа движения, источник эталона.
+# Инструменты берут первый токен; строки с # и пустые пропускаются. Источник: smpl — есть вращения SMPL, иначе coco (точки COCO-17).
+# Правило выбора: на жанр три базовых (sBM) разных типа движения со SMPL; три продвинутых (sFM) разных типа,
+# сначала типы со SMPL, остальные — первый свободный тип по номеру; в типе — последовательность с наименьшими d и ch.
+# Break
+gBR_sBM_cAll_d04_mBR0_ch01 BR basic m0 smpl
+gBR_sBM_cAll_d04_mBR2_ch01 BR basic m2 smpl
+gBR_sBM_cAll_d05_mBR5_ch01 BR basic m5 smpl
+gBR_sFM_cAll_d04_mBR0_ch01 BR advanced m0 smpl
+gBR_sFM_cAll_d04_mBR1_ch02 BR advanced m1 coco
+gBR_sFM_cAll_d04_mBR2_ch03 BR advanced m2 coco
+# House
+gHO_sBM_cAll_d19_mHO0_ch01 HO basic m0 smpl
+gHO_sBM_cAll_d19_mHO2_ch01 HO basic m2 smpl
+gHO_sBM_cAll_d20_mHO5_ch01 HO basic m5 smpl
+gHO_sFM_cAll_d19_mHO5_ch06 HO advanced m5 smpl
+gHO_sFM_cAll_d19_mHO0_ch01 HO advanced m0 coco
+gHO_sFM_cAll_d19_mHO1_ch02 HO advanced m1 coco
+# Ballet Jazz
+gJB_sBM_cAll_d07_mJB0_ch01 JB basic m0 smpl
+gJB_sBM_cAll_d07_mJB2_ch01 JB basic m2 smpl
+gJB_sBM_cAll_d08_mJB5_ch01 JB basic m5 smpl
+gJB_sFM_cAll_d07_mJB5_ch06 JB advanced m5 smpl
+gJB_sFM_cAll_d07_mJB0_ch01 JB advanced m0 coco
+gJB_sFM_cAll_d07_mJB1_ch02 JB advanced m1 coco
+# Street Jazz
+gJS_sBM_cAll_d01_mJS0_ch01 JS basic m0 smpl
+gJS_sBM_cAll_d01_mJS2_ch01 JS basic m2 smpl
+gJS_sBM_cAll_d02_mJS5_ch01 JS basic m5 smpl
+gJS_sFM_cAll_d01_mJS3_ch04 JS advanced m3 smpl
+gJS_sFM_cAll_d01_mJS0_ch01 JS advanced m0 coco
+gJS_sFM_cAll_d01_mJS1_ch02 JS advanced m1 coco
+# Krump
+gKR_sBM_cAll_d28_mKR0_ch01 KR basic m0 smpl
+gKR_sBM_cAll_d28_mKR2_ch01 KR basic m2 smpl
+gKR_sBM_cAll_d29_mKR5_ch01 KR basic m5 smpl
+gKR_sFM_cAll_d28_mKR2_ch03 KR advanced m2 smpl
+gKR_sFM_cAll_d28_mKR0_ch01 KR advanced m0 coco
+gKR_sFM_cAll_d28_mKR1_ch02 KR advanced m1 coco
+# LA-style Hip-Hop
+gLH_sBM_cAll_d16_mLH0_ch01 LH basic m0 smpl
+gLH_sBM_cAll_d16_mLH2_ch01 LH basic m2 smpl
+gLH_sBM_cAll_d17_mLH5_ch01 LH basic m5 smpl
+gLH_sFM_cAll_d16_mLH4_ch05 LH advanced m4 smpl
+gLH_sFM_cAll_d16_mLH0_ch01 LH advanced m0 coco
+gLH_sFM_cAll_d16_mLH1_ch02 LH advanced m1 coco
+# Lock
+gLO_sBM_cAll_d13_mLO0_ch01 LO basic m0 smpl
+gLO_sBM_cAll_d13_mLO2_ch01 LO basic m2 smpl
+gLO_sBM_cAll_d14_mLO5_ch01 LO basic m5 smpl
+gLO_sFM_cAll_d13_mLO2_ch03 LO advanced m2 smpl
+gLO_sFM_cAll_d13_mLO0_ch01 LO advanced m0 coco
+gLO_sFM_cAll_d13_mLO1_ch02 LO advanced m1 coco
+# Middle Hip-Hop
+gMH_sBM_cAll_d22_mMH0_ch01 MH basic m0 smpl
+gMH_sBM_cAll_d22_mMH2_ch01 MH basic m2 smpl
+gMH_sBM_cAll_d23_mMH5_ch01 MH basic m5 smpl
+gMH_sFM_cAll_d22_mMH3_ch04 MH advanced m3 smpl
+gMH_sFM_cAll_d22_mMH0_ch01 MH advanced m0 coco
+gMH_sFM_cAll_d22_mMH1_ch02 MH advanced m1 coco
+# Pop
+gPO_sBM_cAll_d10_mPO0_ch01 PO basic m0 smpl
+gPO_sBM_cAll_d10_mPO2_ch01 PO basic m2 smpl
+gPO_sBM_cAll_d11_mPO5_ch01 PO basic m5 smpl
+gPO_sFM_cAll_d10_mPO1_ch02 PO advanced m1 smpl
+gPO_sFM_cAll_d10_mPO0_ch01 PO advanced m0 coco
+gPO_sFM_cAll_d10_mPO2_ch03 PO advanced m2 coco
+# Waack
+gWA_sBM_cAll_d25_mWA0_ch01 WA basic m0 smpl
+gWA_sBM_cAll_d25_mWA2_ch01 WA basic m2 smpl
+gWA_sBM_cAll_d26_mWA5_ch01 WA basic m5 smpl
+gWA_sFM_cAll_d25_mWA0_ch01 WA advanced m0 smpl
+gWA_sFM_cAll_d25_mWA1_ch02 WA advanced m1 coco
+gWA_sFM_cAll_d25_mWA2_ch03 WA advanced m2 coco
