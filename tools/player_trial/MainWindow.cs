@@ -39,6 +39,9 @@ namespace PlayerTrial
         /// <summary>Заливка активной кнопки камеры (primary, как LeftColor в SkeletonCanvas).</summary>
         private static readonly Brush RingActive = new SolidColorBrush(Color.FromRgb(0x42, 0xa5, 0xf5));
 
+        /// <summary>Тёмная подпись на выбранной (синей) кнопке камеры (S24): тёмный текст на синем.</summary>
+        private static readonly Brush RingActiveText = new SolidColorBrush(Color.FromRgb(0x10, 0x11, 0x14));
+
         private readonly Options opts;
         private readonly ComboBox trackerBox = new ComboBox { Width = 150, Margin = new Thickness(10, 8, 8, 8) };
         private readonly Button sensorButton = new Button { Content = "Старт сенсора", Width = 110, Margin = new Thickness(0, 8, 8, 8) };
@@ -54,10 +57,14 @@ namespace PlayerTrial
         private readonly TextBlock sceneStats = new TextBlock
         {
             Foreground = Text,
+            Background = new SolidColorBrush(Color.FromRgb(0x1b, 0x1c, 0x22)),
             FontFamily = new FontFamily("Consolas"),
-            FontSize = 14,
-            Padding = new Thickness(8),
-            Margin = new Thickness(8, 4, 8, 8),
+            FontSize = 15,
+            FontWeight = FontWeights.Normal,
+            LineHeight = 24,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
+            Padding = new Thickness(14, 10, 14, 12),
+            Margin = new Thickness(10, 0, 10, 10),
         };
         private readonly TextBlock sceneNoSensor = new TextBlock
         {
@@ -70,11 +77,12 @@ namespace PlayerTrial
         };
 
         // вторая строка тулбара: управление воспроизведением (S12), отсчёт попытки (S14), ракурс (S13), скорость (S17)
-        private readonly Button playButton = new Button { Content = "⏸ Пауза", Width = 100, Margin = new Thickness(10, 8, 8, 8) };
-        private readonly Button restartButton = new Button { Content = "⟳ Рестарт", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
-        private readonly Button attemptButton = new Button { Content = "Попытка", Width = 100, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly Button playButton = new Button { Content = "⏸ Пауза", Width = 100, FontSize = 20, Margin = new Thickness(10, 8, 8, 8) };
+        private readonly Button restartButton = new Button { Content = "⟳ Рестарт", Width = 100, FontSize = 20, Margin = new Thickness(0, 8, 8, 8) };
+        private readonly Button attemptButton = new Button { Content = "Попытка", Width = 100, FontSize = 20, Margin = new Thickness(0, 8, 8, 8) };
         private readonly TextBlock countdownLabel = new TextBlock { Foreground = Text, Text = "Отсчёт:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
-        private readonly ComboBox countdownBox = new ComboBox { Width = 70, Margin = new Thickness(0, 8, 8, 8) };
+        // S24: поле отсчёта — высота обычного поля, а не ряда тулбара
+        private readonly ComboBox countdownBox = new ComboBox { Width = 70, Height = 40, FontSize = 18, VerticalAlignment = VerticalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 8, 8, 8) };
 
         // кольцо камер (S13): кнопки ракурсов по окружности вокруг «танцора», c05 внизу (фронтальный), шаг 40°;
         // позиция кнопки на кольце = ракурс камеры, недоступные камеры (нет файла) не рисуются
@@ -87,7 +95,7 @@ namespace PlayerTrial
         /// расходится по всем камерам).
         /// </summary>
         private const double CameraYawSign = -1.0;
-        private readonly Canvas angleRing = new Canvas { Width = 150, Height = 110, Margin = new Thickness(14, 2, 16, 2), VerticalAlignment = VerticalAlignment.Center };
+        private readonly Canvas angleRing = new Canvas { Width = CameraRing.CanvasW, Height = CameraRing.CanvasH, Margin = new Thickness(10, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center };
         private readonly List<Button> ringButtons = new List<Button>();
         private string? currentCamera;
         private readonly TextBlock speedLabel = new TextBlock { Foreground = Text, Text = "Скорость", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(16, 8, 4, 8) };
@@ -114,12 +122,13 @@ namespace PlayerTrial
         private readonly DispatcherTimer countdownTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
 
         // финальный экран итогов трека (T20, аудит P1.9): карточка по центру сцены призраков
-        // (расположение как countdownText, панель шире), появляется при MediaEnded только с оценкой
-        // (lastScore != null; --no-sensor или нет человека — не показывается). «Ещё раз» = попытка
-        // (отсчёт, рестарт с нуля), «Закрыть» просто прячет; любой StartAttempt/RestartFromZero прячет,
-        // смена ракурса оверлей сохраняет — финал можно рассматривать в другом ракурсе видео.
-        // Запись и сенсор оверлей не трогает.
-        private static readonly Brush FinalCardBrush = new SolidColorBrush(Color.FromArgb(0xb8, 0x1b, 0x1c, 0x22));
+        // (расположение как countdownText, панель шире), появляется при MediaEnded: с оценкой —
+        // «Трек пройден» и итог; без оценки (lastScore null: --no-sensor, сенсор не видел танцора)
+        // — карточка «Трек закончен / без оценки» с предложением повторить (S28), конец трека
+        // не должен выглядеть как пауза. «Ещё раз» = попытка (отсчёт, рестарт с нуля), «Закрыть»
+        // просто прячет; любой StartAttempt/RestartFromZero прячет, смена ракурса оверлей
+        // сохраняет — финал можно рассматривать в другом ракурсе видео. Запись и сенсор оверлей не трогает.
+        private static readonly Brush FinalCardBrush = new SolidColorBrush(Color.FromArgb(0xF0, 0x1b, 0x1c, 0x22));
         private readonly Border finalCard = new Border
         {
             Background = FinalCardBrush,
@@ -131,6 +140,7 @@ namespace PlayerTrial
             VerticalAlignment = VerticalAlignment.Center,
             Visibility = Visibility.Collapsed,
         };
+        private readonly TextBlock finalTitle = new TextBlock { Foreground = Text, Text = "Трек пройден", FontSize = 26, FontWeight = FontWeights.SemiBold, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 0, 0, 8) };
         private readonly TextBlock finalTotal = new TextBlock
         {
             Foreground = Text,
@@ -153,7 +163,7 @@ namespace PlayerTrial
         private int coverageCount;       // т.к. TrialScore.Coverage — покрытие последнего сравнения, не среднее
 
         private LiveRecorder? recorder;
-        private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+        private readonly TextBlock status = new TextBlock { Foreground = Text, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 12, 0), MaxWidth = 640, TextTrimming = TextTrimming.CharacterEllipsis };
         private readonly ScaleTransform videoZoom = new ScaleTransform(1.0, 1.0); // зум кадра видео (S21), ведёт авто-кадр × слайдер на тике
         private readonly TranslateTransform videoPan = new TranslateTransform(); // авто-панорама видео (S21, T12), ведёт следящий кадр
         private readonly MediaElement media = new MediaElement { Stretch = Stretch.Uniform, LoadedBehavior = MediaState.Manual, UnloadedBehavior = MediaState.Close, ScrubbingEnabled = true };
@@ -302,9 +312,25 @@ namespace PlayerTrial
         {
             opts = options;
             Title = "DanceLab: пробный плеер (" + opts.Seq + ")";
-            Width = 1320;
-            Height = 780;
+            // окно целиком помещается в рабочую область экрана (S31): при масштабе 150% окно 1320x780 шире и выше экрана,
+            // правый край уходил за экран, низ оказывался под панелью задач
+            var workArea = SystemParameters.WorkArea; // DIPs, без панели задач
+            Width = Math.Min(1320, workArea.Width);
+            Height = Math.Min(780, workArea.Height);
+            MaxWidth = Math.Max(320, workArea.Width);
+            MaxHeight = Math.Max(240, workArea.Height);
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background = new SolidColorBrush(Color.FromRgb(0x10, 0x11, 0x14));
+
+            // S23: window-level тёмный стиль кнопки — тулбар, кольцо камер и финальная карта;
+            // наведение и нажатие не белят кнопку и не прячут подпись
+            Resources.Add(typeof(Button), CreateDarkButtonStyle());
+
+            // E32: тёмные ComboBox и ComboBoxItem как умолчания окна — тулбар целиком в одной
+            // тёмной теме; стилизация свойствами не перекрашивает popup (шаблон Aero2 красит
+            // его системными кистями), поэтому полный шаблон из XAML-строки
+            Resources.Add(typeof(ComboBox), CreateDarkComboBoxStyle());
+            Resources.Add(typeof(ComboBoxItem), CreateDarkComboBoxItemStyle());
 
             trackerBox.Items.Add("Kinect SDK 2.0");
             trackerBox.Items.Add("Nuitrack нативный");
@@ -339,13 +365,14 @@ namespace PlayerTrial
 
             OnZoomChanged();
 
-            // метка танцора в центре кольца камер (S13); Ellipse полным именем: Path из Shapes конфликтует с System.IO
+            // метка танцора в центре кольца камер (S13, S24: позиции из CameraRing);
+            // Ellipse полным именем: Path из Shapes конфликтует с System.IO
             var dancerDot = new System.Windows.Shapes.Ellipse { Width = 12, Height = 12, Fill = Text };
-            Canvas.SetLeft(dancerDot, 69);
-            Canvas.SetTop(dancerDot, 38);
-            var dancerLabel = new TextBlock { Text = "танцор", Foreground = Text, FontSize = 10, Width = 150, TextAlignment = TextAlignment.Center };
+            Canvas.SetLeft(dancerDot, CameraRing.CenterX - 6);
+            Canvas.SetTop(dancerDot, CameraRing.CenterY - 14);
+            var dancerLabel = new TextBlock { Text = "танцор", Foreground = Text, FontSize = 10, Width = CameraRing.CanvasW, TextAlignment = TextAlignment.Center };
             Canvas.SetLeft(dancerLabel, 0);
-            Canvas.SetTop(dancerLabel, 54);
+            Canvas.SetTop(dancerLabel, CameraRing.CenterY + 2);
             angleRing.Children.Add(dancerDot);
             angleRing.Children.Add(dancerLabel);
 
@@ -407,13 +434,13 @@ namespace PlayerTrial
             media.MediaFailed += (s, e) =>
             {
                 switchingCamera = false;
-                status.Text = "Видео не открылось: " + e.ErrorException.Message;
+                SetStatus("Видео не открылось: " + e.ErrorException.Message);
             };
             media.MediaEnded += (s, e) =>
             {
                 paused = true;
                 finalDurationSec = ClockSeconds(); // длительность трека на конец (T20)
-                ShowFinalOverlay(); // только с оценкой (lastScore != null), иначе — пауза как раньше
+                ShowFinalOverlay(); // с оценкой — итоги (T20), без оценки — карточка «Трек закончен» (S28)
                 UpdatePlayButton();
             };
 
@@ -438,15 +465,7 @@ namespace PlayerTrial
             finalButtons.Children.Add(finalRetryButton);
             finalButtons.Children.Add(finalCloseButton);
             var finalStack = new StackPanel();
-            finalStack.Children.Add(new TextBlock
-            {
-                Foreground = Text,
-                Text = "Трек пройден",
-                FontSize = 26,
-                FontWeight = FontWeights.SemiBold,
-                TextAlignment = TextAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 8),
-            });
+            finalStack.Children.Add(finalTitle);
             finalStack.Children.Add(finalTotal);
             finalStack.Children.Add(finalStats);
             finalStack.Children.Add(finalButtons);
@@ -493,7 +512,7 @@ namespace PlayerTrial
                 modeBox.SelectedIndex = 1; // стартовый режим --mode scene (S16), сразу включает панель сцены
             }
 
-            status.Text = "Загрузка...";
+            SetStatus("Загрузка...");
             PreviewKeyDown += (s, e) =>
             {
                 if (e.Key == Key.Space)
@@ -513,6 +532,207 @@ namespace PlayerTrial
             Loaded += async (s, e) => await ApplyStartup();
         }
 
+        /// <summary>
+        /// Тёмный стиль кнопки (S23, аудит 2026-11-23): фон RingIdle и светлая подпись всегда;
+        /// наведение и нажатие — светлая полупрозрачная вуаль поверх (hover Opacity 0.12,
+        /// pressed 0.24), цвет фона и подпись триггеры не меняют — текст читаем под курсором.
+        /// Отключённая кнопка тускнеет (bg Opacity 0.4). Шаблон построен кодом (FrameworkElementFactory),
+        /// регистрируется как умолчание окна: Resources.Add(typeof(Button), ...).
+        /// </summary>
+        private static Style CreateDarkButtonStyle()
+        {
+            var style = new Style(typeof(Button));
+            style.Setters.Add(new Setter(BackgroundProperty, RingIdle));
+            style.Setters.Add(new Setter(ForegroundProperty, Text));
+            style.Setters.Add(new Setter(BorderBrushProperty, new SolidColorBrush(Color.FromRgb(0x3a, 0x3d, 0x47))));
+            style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(1)));
+            style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
+
+            var grid = new FrameworkElementFactory(typeof(Grid));
+
+            var bg = new FrameworkElementFactory(typeof(Border), "bg");
+            bg.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+            bg.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Control.BorderBrushProperty));
+            bg.SetValue(Border.BorderThicknessProperty, new TemplateBindingExtension(Control.BorderThicknessProperty));
+            bg.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
+            grid.AppendChild(bg);
+
+            var hover = new FrameworkElementFactory(typeof(Border), "hover");
+            hover.SetValue(Border.BackgroundProperty, Brushes.White);
+            hover.SetValue(Border.OpacityProperty, 0.0);
+            hover.SetValue(Border.CornerRadiusProperty, new CornerRadius(3));
+            hover.SetValue(Border.IsHitTestVisibleProperty, false);
+            grid.AppendChild(hover);
+
+            var content = new FrameworkElementFactory(typeof(ContentPresenter));
+            content.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            content.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+            grid.AppendChild(content);
+
+            var template = new ControlTemplate(typeof(Button)) { VisualTree = grid };
+
+            // S23: сеттеры с TargetName допустимы только в Template.Triggers, не в Style.Triggers
+            var over = new Trigger { Property = IsMouseOverProperty, Value = true };
+            over.Setters.Add(new Setter(OpacityProperty, 0.12, "hover"));
+            template.Triggers.Add(over);
+
+            var pressed = new Trigger { Property = Button.IsPressedProperty, Value = true };
+            pressed.Setters.Add(new Setter(OpacityProperty, 0.24, "hover"));
+            template.Triggers.Add(pressed);
+
+            var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
+            disabled.Setters.Add(new Setter(OpacityProperty, 0.4, "bg"));
+            template.Triggers.Add(disabled);
+
+            style.Setters.Add(new Setter(TemplateProperty, template));
+
+            return style;
+        }
+
+        /// <summary>
+        /// Тёмный стиль ComboBox (E32, 2026-11-23): полный шаблон по образцу Aero2 —
+        /// стилизация одними свойствами не перекрашивает popup, шаблон Aero2 красит его
+        /// системными кистями. XAML строится в коде (XamlReader.Parse, XAML-файлов в
+        /// проекте нет). Части с x:Name обязательны — их ищет код ComboBox: templateRoot,
+        /// toggleButton, contentPresenter, PART_Popup, dropDownBorder. Бокс #FF2A2C34,
+        /// рамка #FF3A3D47; при наведении и открытом списке рамка #FF5FB3F8, фон не меняется;
+        /// отключённый бокс Opacity 0.5. Список: dropDownBorder #FF1B1C22, радиус 4,
+        /// отступ сверху 2. Регистрируется как умолчание окна: Resources.Add(typeof(ComboBox), ...).
+        /// </summary>
+        private static Style CreateDarkComboBoxStyle()
+        {
+            const string xaml = @"
+<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+       xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
+       TargetType='ComboBox'>
+  <Setter Property='Background' Value='#FF2A2C34' />
+  <Setter Property='Foreground' Value='#FFE6E6EA' />
+  <Setter Property='BorderBrush' Value='#FF3A3D47' />
+  <Setter Property='BorderThickness' Value='1' />
+  <Setter Property='Padding' Value='8,2,4,2' />
+  <Setter Property='SnapsToDevicePixels' Value='True' />
+  <Setter Property='Template'>
+    <Setter.Value>
+      <ControlTemplate TargetType='ComboBox'>
+        <Grid x:Name='templateRoot' SnapsToDevicePixels='True'>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width='*' />
+            <ColumnDefinition Width='32' />
+          </Grid.ColumnDefinitions>
+          <ToggleButton x:Name='toggleButton' Grid.ColumnSpan='2'
+                        Background='{TemplateBinding Background}'
+                        BorderBrush='{TemplateBinding BorderBrush}'
+                        BorderThickness='{TemplateBinding BorderThickness}'
+                        Focusable='False' ClickMode='Press'
+                        IsChecked='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'>
+            <ToggleButton.Template>
+              <ControlTemplate TargetType='ToggleButton'>
+                <Border x:Name='border' Background='{TemplateBinding Background}'
+                        BorderBrush='{TemplateBinding BorderBrush}'
+                        BorderThickness='{TemplateBinding BorderThickness}'
+                        CornerRadius='3' SnapsToDevicePixels='True'>
+                  <Path Data='M 0 0 L 4 4 L 8 0 Z' Fill='{TemplateBinding Foreground}'
+                        HorizontalAlignment='Right' VerticalAlignment='Center'
+                        Margin='0,0,10,0' IsHitTestVisible='False' />
+                </Border>
+                <ControlTemplate.Triggers>
+                  <Trigger Property='IsMouseOver' Value='True'>
+                    <Setter TargetName='border' Property='BorderBrush' Value='#FF5FB3F8' />
+                  </Trigger>
+                  <Trigger Property='IsChecked' Value='True'>
+                    <Setter TargetName='border' Property='BorderBrush' Value='#FF5FB3F8' />
+                  </Trigger>
+                </ControlTemplate.Triggers>
+              </ControlTemplate>
+            </ToggleButton.Template>
+          </ToggleButton>
+          <ContentPresenter x:Name='contentPresenter' Grid.Column='0'
+                            Content='{TemplateBinding SelectionBoxItem}'
+                            ContentTemplate='{TemplateBinding SelectionBoxItemTemplate}'
+                            ContentTemplateSelector='{TemplateBinding ItemTemplateSelector}'
+                            ContentStringFormat='{TemplateBinding SelectionBoxItemStringFormat}'
+                            Margin='{TemplateBinding Padding}'
+                            HorizontalAlignment='Left' VerticalAlignment='Center'
+                            IsHitTestVisible='False' />
+          <Popup x:Name='PART_Popup' AllowsTransparency='True' Focusable='False'
+                 IsOpen='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'
+                 Placement='Bottom' PopupAnimation='Fade'>
+            <Border x:Name='dropDownBorder' Background='#FF1B1C22' BorderBrush='#FF3A3D47'
+                    BorderThickness='1' CornerRadius='4' Margin='0,2,0,0'
+                    MaxHeight='{TemplateBinding MaxDropDownHeight}'
+                    MinWidth='{Binding ActualWidth, ElementName=templateRoot}'
+                    SnapsToDevicePixels='True'>
+              <ScrollViewer Margin='2' VerticalScrollBarVisibility='Auto'
+                            HorizontalScrollBarVisibility='Auto' SnapsToDevicePixels='True'>
+                <ItemsPresenter KeyboardNavigation.DirectionalNavigation='Contained' />
+              </ScrollViewer>
+            </Border>
+          </Popup>
+        </Grid>
+        <ControlTemplate.Triggers>
+          <Trigger Property='IsEnabled' Value='False'>
+            <Setter Property='Opacity' Value='0.5' />
+          </Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>";
+            return (Style)System.Windows.Markup.XamlReader.Parse(xaml);
+        }
+
+        /// <summary>
+        /// Тёмный стиль ComboBoxItem (E32, 2026-11-23): пункты выпадающего списка — фон
+        /// #FF1B1C22, текст #FFE6E6EA; наведение #FF2F323C, выбран — #FF42A5F5 с тёмным
+        /// текстом #FF101114, отключённый — Opacity 0.5. Шаблон: Border (Background и
+        /// BorderBrush от шаблона) + ContentPresenter с отступом 10,6. Вторая XAML-строка,
+        /// регистрируется как умолчание окна: Resources.Add(typeof(ComboBoxItem), ...).
+        /// </summary>
+        private static Style CreateDarkComboBoxItemStyle()
+        {
+            const string xaml = @"
+<Style xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+       xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'
+       TargetType='ComboBoxItem'>
+  <Setter Property='Background' Value='#FF1B1C22' />
+  <Setter Property='Foreground' Value='#FFE6E6EA' />
+  <Setter Property='SnapsToDevicePixels' Value='True' />
+  <Setter Property='Template'>
+    <Setter.Value>
+      <ControlTemplate TargetType='ComboBoxItem'>
+        <Border x:Name='bd' Background='{TemplateBinding Background}'
+                BorderBrush='{TemplateBinding BorderBrush}' SnapsToDevicePixels='True'>
+          <ContentPresenter Margin='10,6' HorizontalAlignment='Left' VerticalAlignment='Center' />
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property='IsMouseOver' Value='True'>
+            <Setter TargetName='bd' Property='Background' Value='#FF2F323C' />
+          </Trigger>
+          <Trigger Property='IsSelected' Value='True'>
+            <Setter TargetName='bd' Property='Background' Value='#FF42A5F5' />
+            <Setter Property='Foreground' Value='#FF101114' />
+          </Trigger>
+          <Trigger Property='IsEnabled' Value='False'>
+            <Setter Property='Opacity' Value='0.5' />
+          </Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value>
+  </Setter>
+</Style>";
+            return (Style)System.Windows.Markup.XamlReader.Parse(xaml);
+        }
+
+        /// <summary>
+        /// Строка состояния (S25): длинные сообщения обрезаются многоточием (MaxWidth 640),
+        /// полный текст живёт в подсказке.
+        /// </summary>
+        private void SetStatus(string text)
+        {
+            status.Text = text;
+            status.ToolTip = text;
+        }
+
         /// <summary>Пуск: эталон, видео, сенсор (--no-sensor пропускает), затем снимок --shot.</summary>
         private async Task ApplyStartup()
         {
@@ -523,10 +743,12 @@ namespace PlayerTrial
                 scorer = new TrialScorer(track, trialParams);
                 ghostLen = GhostLengths.FromLeg(track.LegLengthM);
                 ghost.SetLengths(ghostLen);
+                // поправка высоты корня эталона (S32): в долях длины ноги — остаётся верной при калибровке костей
+                ghost.SetGroundShift(GhostCanvas.ComputeGroundShift(track));
             }
             catch (Exception ex)
             {
-                status.Text = "Эталон не загрузился (" + canonicalPath + "): " + ex.Message;
+                SetStatus("Эталон не загрузился (" + canonicalPath + "): " + ex.Message);
             }
 
             // следящий кадр (S21, T12): пиксели корня танцора по камерам, рядом с canonical.json
@@ -560,7 +782,7 @@ namespace PlayerTrial
             {
                 videoOk = false;
                 fallbackClock.Restart();
-                status.Text = "Видео " + (track?.Video ?? "?") + " не найдено в data/aist/video: призраки идут по реальным часам, без звука.";
+                SetStatus("Видео " + (track?.Video ?? "?") + " не найдено в data/aist/video: призраки идут по реальным часам, без звука.");
             }
 
             if (!opts.NoSensor)
@@ -570,7 +792,9 @@ namespace PlayerTrial
             }
             else if (videoOk)
             {
-                status.Text = "Идёт проба: " + opts.Seq + ", без сенсора (--no-sensor). Space: пауза/плей, R: рестарт.";
+                SetStatus(mode == AppMode.Scene
+                        ? "Сцена сенсора: сенсор не запущен, «Старт сенсора» его запускает."
+                        : "Идёт проба: " + opts.Seq + ", без сенсора (--no-sensor). Space: пауза/плей, R: рестарт.");
             }
 
             // регрессионный сценарий медиа-quirks (T23): закрытие окна в конце сценария,
@@ -666,12 +890,12 @@ namespace PlayerTrial
                 }
                 else
                 {
-                    status.Text = "cams.json без ключа cameras: авто-кадр в fallback (" + path + ").";
+                    SetStatus("cams.json без ключа cameras: авто-кадр в fallback (" + path + ").");
                 }
             }
             catch (Exception ex)
             {
-                status.Text = "cams.json не загрузился: авто-кадр в fallback (" + ex.Message + ").";
+                SetStatus("cams.json не загрузился: авто-кадр в fallback (" + ex.Message + ").");
             }
 
             return cameras;
@@ -693,6 +917,7 @@ namespace PlayerTrial
                 follower.Reset(sliderZoom);
                 videoPan.X = 0;
                 videoPan.Y = 0;
+                ghost.SetVideoBox(false, 0, 0, 0, ghost.ActualWidth, ghost.ActualHeight, sliderZoom);
                 return;
             }
 
@@ -703,6 +928,16 @@ namespace PlayerTrial
             videoZoom.ScaleY = frame.Zoom;
             videoPan.X = frame.PanX;
             videoPan.Y = frame.PanY;
+
+            // кадр сцены (S26, S32): та же рамка танцора в пикселях панели видео, пересчитанная в размеры
+            // панели сцены; линию пола сцена берёт по обуви танцора (FeetY), не по нижней кромке с запасом
+            var vw = media.ActualWidth;
+            var vh = winH;
+            var gw = ghost.ActualWidth;
+            var gh = ghost.ActualHeight;
+            var kx = vw > 0 ? gw / vw : 1.0;
+            var ky = vh > 0 ? gh / vh : 1.0;
+            ghost.SetVideoBox(frame.Box.IsValid, frame.Box.Height * ky, frame.Box.FeetY * ky, frame.Box.CenterX * kx, gw, gh, sliderZoom);
         }
 
         /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг,
@@ -912,7 +1147,8 @@ namespace PlayerTrial
             var floorLine = FloorHudLine(inv); // S15: оценка пола или «оцениваю»
             if (opts.NoSensor || session == null)
             {
-                hud.Text = "без сенсора" + Environment.NewLine + timeLine + Environment.NewLine + floorLine;
+                // S30: пол здесь не оценивается — строки «пол: оцениваю» нет
+                hud.Text = "без сенсора" + Environment.NewLine + timeLine;
                 return;
             }
 
@@ -1169,9 +1405,9 @@ namespace PlayerTrial
             mode = scene ? AppMode.Scene : AppMode.Probe;
             views.Visibility = scene ? Visibility.Collapsed : Visibility.Visible;
             sceneView.Visibility = scene ? Visibility.Visible : Visibility.Collapsed;
-            status.Text = scene
+            SetStatus(scene
                 ? "Режим сцены сенсора: скелеты всех людей, вид спереди и сверху."
-                : "Режим пробы: " + opts.Seq + ".";
+                : "Режим пробы: " + opts.Seq + ".");
         }
 
         /// <summary>
@@ -1262,25 +1498,36 @@ namespace PlayerTrial
         }
 
         /// <summary>
-        /// Финальный экран итогов трека (T20, аудит P1.9): «Трек пройден», итоговый процент (Total01,
-        /// крупно), грубые ошибки, среднее покрытие за трек (TrialScore.Coverage — последний кадр, поэтому
-        /// среднее копится по оценённым кадрам) и длительность (ClockSeconds на момент MediaEnded).
-        /// Без оценки (lastScore null: --no-sensor, нет человека) не показывается — вызов без обеих кнопок.
+        /// Финальный экран (T20, аудит P1.9): с оценкой — «Трек пройден», итоговый процент (Total01,
+        /// крупно), грубые ошибки, среднее покрытие за трек (TrialScore.Coverage — последний кадр,
+        /// поэтому среднее копится по оценённым кадрам) и длительность (ClockSeconds на момент
+        /// MediaEnded). Без оценки (lastScore null: --no-sensor, сенсор не видел танцора) — карточка
+        /// «Трек закончен / без оценки» с предложением повторить (S28): конец трека не должен
+        /// выглядеть как пауза.
         /// </summary>
         private void ShowFinalOverlay()
         {
             var score = lastScore;
             if (score == null)
             {
-                return;
+                finalTitle.Text = "Трек закончен";
+                finalTotal.Text = "без оценки";
+                finalTotal.FontSize = 40;
+                finalStats.Text = "Сенсор не видел танцора, итог не накоплен." + Environment.NewLine
+                    + "«Ещё раз» или Space: попытка заново.";
+            }
+            else
+            {
+                finalTitle.Text = "Трек пройден";
+                finalTotal.FontSize = 72;
+                var inv = CultureInfo.InvariantCulture;
+                finalTotal.Text = (score.Total01 * 100).ToString("0", inv) + "%";
+                var coverage = coverageCount > 0 ? coverageSum / coverageCount : score.Coverage;
+                finalStats.Text = "Грубые ошибки: " + score.Errors.ToString(inv) + Environment.NewLine
+                    + "Покрытие: " + (coverage * 100).ToString("0", inv) + "%" + Environment.NewLine
+                    + "Длительность: " + TimeSpan.FromSeconds(finalDurationSec).ToString(@"mm\:ss", inv);
             }
 
-            var inv = CultureInfo.InvariantCulture;
-            finalTotal.Text = (score.Total01 * 100).ToString("0", inv) + "%";
-            var coverage = coverageCount > 0 ? coverageSum / coverageCount : score.Coverage;
-            finalStats.Text = "Грубые ошибки: " + score.Errors.ToString(inv) + Environment.NewLine
-                + "Покрытие: " + (coverage * 100).ToString("0", inv) + "%" + Environment.NewLine
-                + "Длительность: " + TimeSpan.FromSeconds(finalDurationSec).ToString(@"mm\:ss", inv);
             finalCard.Visibility = Visibility.Visible;
         }
 
@@ -1315,28 +1562,34 @@ namespace PlayerTrial
                     continue; // недоступная камера не рисуется вовсе
                 }
 
-                // позиция на кольце = ракурс: c05 внизу (фронтальный), соседи по 40°, c01 почти напротив;
-                // тот же знак, что у азимута сцены: карта кольца согласована с поворотом 3D-сцены
-                var a = (90 + (CameraYawSign * ((i - 5) * CameraYawStepDeg))) * Math.PI / 180.0;
+                // позиция на кольце = ракурс (S24): раскладка из CameraRing.Layout — c05 внизу
+                // (фронтальный), кнопки не перекрываются, между соседними зазор
+                var (left, top) = CameraRing.Layout(i);
                 var button = new Button
                 {
                     Content = cam,
-                    Width = 30,
-                    Height = 30,
-                    FontSize = 10,
+                    Width = CameraRing.ButtonW,
+                    Height = CameraRing.ButtonH,
+                    FontSize = 11,
                     Padding = new Thickness(0),
                     Tag = cam,
-                    Background = cam == currentCamera ? RingActive : RingIdle,
-                    Foreground = Text,
                 };
-                Canvas.SetLeft(button, 75 + (55 * Math.Cos(a)) - 15);
-                Canvas.SetTop(button, 52 + (35 * Math.Sin(a)) - 15);
+                StyleRingButton(button, cam == currentCamera);
+                Canvas.SetLeft(button, left);
+                Canvas.SetTop(button, top);
                 button.Click += (s, e) => SwitchAngle(cam);
                 angleRing.Children.Add(button);
                 ringButtons.Add(button);
             }
 
             ghost.CameraYawRad = YawRad(currentCamera);
+        }
+
+        /// <summary>Цвета кнопки камеры (S24): выбранная — RingActive с тёмной подписью, остальная — RingIdle со светлой.</summary>
+        private static void StyleRingButton(Button button, bool selected)
+        {
+            button.Background = selected ? RingActive : RingIdle;
+            button.Foreground = selected ? RingActiveText : Text;
         }
 
         /// <summary>Азимут камеры для 3D-сцены (S19): c05 = 0°, шаг 40° по номеру; знак согласован с видео на снимках E4.</summary>
@@ -1384,7 +1637,7 @@ namespace PlayerTrial
             ghost.CameraYawRad = YawRad(cam); // сцена поворачивается вместе с видео
             foreach (var b in ringButtons)
             {
-                b.Background = (string)b.Tag == cam ? RingActive : RingIdle;
+                StyleRingButton(b, (string)b.Tag == cam);
             }
 
             media.Source = new Uri(newPath);
@@ -1393,7 +1646,7 @@ namespace PlayerTrial
                 media.Play();
             }
 
-            status.Text = "Ракурс " + cam + ", позиция " + pendingRestore.Value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " с сохраняется...";
+            SetStatus("Ракурс " + cam + ", позиция " + pendingRestore.Value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + " с сохраняется...");
         }
 
         /// <summary>Скорость (S17): SpeedRatio видео и коэффициент резервных часов, действует и во время воспроизведения.</summary>
@@ -1421,8 +1674,8 @@ namespace PlayerTrial
         }
 
         /// <summary>
-        /// Кадр (S21, S19, T12): слайдер — множитель поверх авто-зума видео (итог ведёт авто-кадр
-        /// на тике, UpdateVideoFrame) и прямой зум сцены призраков (GhostCanvas.FrameZoom).
+        /// Кадр (S21, S19, T12): слайдер — множитель поверх авто-зума; до обеих половин он доходит
+        /// через тик — UpdateVideoFrame применяет его к видео и с тем же значением кормит сцену (S26).
         /// </summary>
         private void OnZoomChanged()
         {
@@ -1438,7 +1691,6 @@ namespace PlayerTrial
             }
 
             zoomValue.Text = "x" + v.ToString("0.0", CultureInfo.InvariantCulture) + " × авто";
-            ghost.FrameZoom = v;
             // видео-зум здесь не ставится: итог z = zAuto * слайдер применяется на тике
         }
 
@@ -1541,19 +1793,19 @@ namespace PlayerTrial
                 var s = session;
                 if (s == null)
                 {
-                    status.Text = "Запись невозможна: сенсор не запущен.";
+                    SetStatus("Запись невозможна: сенсор не запущен.");
                     return;
                 }
 
                 var dir = Path.Combine(RepoRoot(), "data", "captures", DateTime.Now.ToString("yyyyMMdd-HHmmss") + "_" + s.Key + "_trial_" + opts.Seq);
                 recorder = LiveRecorder.Start(s.Source, dir, "trial_" + opts.Seq, s.Version, s.Key == "nuitrack-ai" ? "CNN_HPE" : null);
                 recordButton.Content = "Стоп записи";
-                status.Text = "Запись: " + recorder.Path;
+                SetStatus("Запись: " + recorder.Path);
                 return;
             }
 
             var frames = StopRecorder();
-            status.Text = "Запись остановлена: " + frames + " кадров.";
+            SetStatus("Запись остановлена: " + frames + " кадров.");
         }
 
         private int StopRecorder()
@@ -1625,11 +1877,11 @@ namespace PlayerTrial
                     trialRestartLimitHit = true;
                     wantRunning = false;
                     await StopAsync();
-                    status.Text = "Nuitrack-триал: лимит перезапусков, включите сенсор вручную.";
+                    SetStatus("Nuitrack-триал: лимит перезапусков, включите сенсор вручную.");
                     return;
                 }
 
-                status.Text = "Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ")";
+                SetStatus("Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ")");
                 await Task.Delay(TimeSpan.FromSeconds(1));
                 if (busy || !wantRunning)
                 {
@@ -1639,12 +1891,12 @@ namespace PlayerTrial
                 await StartAsync();
                 if (session != null)
                 {
-                    status.Text = "Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ") выполнен.";
+                    SetStatus("Nuitrack-триал: перезапуск сессии (" + attempt.ToString(CultureInfo.InvariantCulture) + ") выполнен.");
                 }
             }
             catch (Exception ex)
             {
-                status.Text = "Nuitrack-триал: ошибка перезапуска: " + ex.Message;
+                SetStatus("Nuitrack-триал: ошибка перезапуска: " + ex.Message);
             }
             finally
             {
@@ -1658,7 +1910,7 @@ namespace PlayerTrial
             trackerBox.IsEnabled = false;
             sensorButton.IsEnabled = false;
             var key = SelectedKey;
-            status.Text = key == "nuitrack-ai" ? "Запускаю Nuitrack AI (загрузка нейросети, несколько секунд)..." : key == "nuitrack-native" ? "Запускаю Nuitrack нативный..." : "Запускаю Kinect SDK...";
+            SetStatus(key == "nuitrack-ai" ? "Запускаю Nuitrack AI (загрузка нейросети, несколько секунд)..." : key == "nuitrack-native" ? "Запускаю Nuitrack нативный..." : "Запускаю Kinect SDK...");
             PlayerSession? created = null;
             string? error = null;
             await Task.Run(() =>
@@ -1687,7 +1939,7 @@ namespace PlayerTrial
             {
                 wantRunning = false;
                 session = null;
-                status.Text = "Сенсор не запустился: " + (error ?? "неизвестная ошибка") + " (видео и эталон-призрак продолжают идти)";
+                SetStatus("Сенсор не запустился: " + (error ?? "неизвестная ошибка") + " (видео и эталон-призрак продолжают идти)");
                 sensorButton.Content = "Старт сенсора";
             }
             else
@@ -1695,7 +1947,10 @@ namespace PlayerTrial
                 session = created;
                 created.Source.FrameReceived += TrackFloorY; // T17: FloorY с сырых кадров сенсора
                 sensorButton.Content = "Стоп сенсора";
-                status.Text = "Идёт проба: " + opts.Seq + ", трекер " + key + ".";
+                // S29: статус описывает текущий режим окна, а не всегда «пробу»
+                SetStatus(mode == AppMode.Scene
+                    ? "Сцена сенсора: трекер " + key + ". Скелеты всех людей, виды спереди и сверху."
+                    : "Идёт проба: " + opts.Seq + ", трекер " + key + ".");
             }
 
             busy = false;
@@ -1708,7 +1963,7 @@ namespace PlayerTrial
             busy = true;
             trackerBox.IsEnabled = false;
             sensorButton.IsEnabled = false;
-            status.Text = "Останавливаю сенсор...";
+            SetStatus("Останавливаю сенсор...");
             StopRecorder();
             var old = session;
             session = null;
@@ -1736,7 +1991,7 @@ namespace PlayerTrial
             sensorButton.Content = "Старт сенсора";
             if (!wantRunning)
             {
-                status.Text = "Сенсор остановлен.";
+                SetStatus("Сенсор остановлен.");
             }
 
             busy = false;
@@ -1951,9 +2206,9 @@ namespace PlayerTrial
             }
 
             Say("RESULT: " + (failures.Count == 0 ? "PASS" : "FAIL: " + string.Join("; ", failures)));
-            status.Text = failures.Count == 0
+            SetStatus(failures.Count == 0
                 ? "Регресс media: PASS."
-                : "Регресс media: FAIL — " + failures[0];
+                : "Регресс media: FAIL — " + failures[0]);
             File.AppendAllLines(RepoPath("data/preview/trial-regress-media.log"), log);
             SavePng(RepoPath("data/preview/trial-regress-media.png"));
             Close();

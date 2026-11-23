@@ -20,15 +20,19 @@ namespace DanceLab.View
         /// <summary>Нижняя кромка рамки (низ bbox с ShoePadRows), пиксели окна панели.</summary>
         public readonly double Bottom;
 
+        /// <summary>Линия обуви танцора (S32): Bottom − (ShoePadRows − FootRows)·s·z, пиксели окна панели.</summary>
+        public readonly double FeetY;
+
         /// <summary>Рамка есть; false у default(ScreenBox).</summary>
         public readonly bool IsValid;
 
-        public ScreenBox(double left, double top, double right, double bottom)
+        public ScreenBox(double left, double top, double right, double bottom, double feetY)
         {
             Left = left;
             Top = top;
             Right = right;
             Bottom = bottom;
+            FeetY = feetY;
             IsValid = true;
         }
 

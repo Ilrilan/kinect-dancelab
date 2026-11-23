@@ -87,6 +87,7 @@ namespace DanceLab.View
         public const double AutoZoomFallback = 1.6; // база авто-зума без cams.json (прежнее умолчание)
         public const double BboxWindowSec = 0.7;    // расширение bbox по времени (гладкость, без пампинга на махах)
         public const double ShoePadRows = 75.0;     // обувь ниже лодыжек-ключевых точек, строк источника (худший кадр c05: выпад ~66)
+        public const double FootRows = 30.0;        // стопа ниже ключевой точки лодыжки, строк источника (типичная обувь; ShoePadRows остаётся запасом кадрирования)
         public const double HeadShiftFrac = 0.07;   // сдвиг центра окна вверх (запас голове), доли высоты окна
         public const double MaxTotalZoom = 9.0;     // предел итогового зума: 3.0 (авто) × 3.0 (слайдер)
 
@@ -116,7 +117,9 @@ namespace DanceLab.View
         /// videoW/videoH — размер источника, sliderZoom — множитель слайдера (округлён и зажат
         /// 1..3 вызывающим). Возвращает итоговый зум (единый по X/Y), панораму в пикселях окна
         /// и рамку танцора ScreenBox в пикселях окна тем же отображением, которое окно применяет
-        /// к видео (масштаб z от центра элемента, затем панорама); без данных — default.
+        /// к видео (масштаб z от центра элемента, затем панорама): Bottom — низ bbox с запасом
+        /// ShoePadRows, FeetY — линия обуви танцора (S32), Bottom − (ShoePadRows − FootRows)·s·z;
+        /// без данных — default.
         /// </summary>
         public (double Zoom, double PanX, double PanY, ScreenBox Box) Update(
                 double t, string? camera, double windowW, double windowH,
@@ -180,11 +183,15 @@ namespace DanceLab.View
             if (hasBox)
             {
                 var vMaxPad = box.VMax + ShoePadRows;
+                var bottom = windowH / 2.0 + (vMaxPad - videoH / 2.0) * s * z + smoothedPanY;
+                // линия обуви танцора (S32): из того же s и z, низ рамки минус запас кадрирования сверх обуви
+                var feetY = bottom - ((ShoePadRows - FootRows) * s * z);
                 screenBox = new ScreenBox(
                         windowW / 2.0 + (box.UMin - videoW / 2.0) * s * z + smoothedPanX,
                         windowH / 2.0 + (box.VMin - videoH / 2.0) * s * z + smoothedPanY,
                         windowW / 2.0 + (box.UMax - videoW / 2.0) * s * z + smoothedPanX,
-                        windowH / 2.0 + (vMaxPad - videoH / 2.0) * s * z + smoothedPanY);
+                        bottom,
+                        feetY);
             }
             else
             {

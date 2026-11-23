@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Media;
 using DanceLab.Core.Canonical;
+using DanceLab.View;
 
 namespace PlayerTrial
 {
@@ -30,6 +32,9 @@ namespace PlayerTrial
         public double HeadR;
 
         public double LegLength => Thigh + Shin;
+
+        /// <summary>Рост фигуры призрака в метрах.</summary>
+        public double HeightM => Thigh + Shin + TorsoLen + NeckToHead + (2 * HeadR);
 
         /// <summary>Пробные доли от заданной длины ноги (до калибровки — длина ноги эталона из track.LegLengthM).</summary>
         public static GhostLengths FromLeg(double legM)
@@ -213,13 +218,6 @@ namespace PlayerTrial
         private const double SceneCenterYm = 0.9;
 
         /// <summary>
-        /// Якорь зума над полом (E9): доля длины ноги. 0 — неподвижная точка ровно на полу под
-        /// танцором; небольшой запас приподнимает кадр, чтобы голова с бейсболкой не резалась
-        /// верхом на зумах до 1.6.
-        /// </summary>
-        private const double FloorAnchorAboveFloorFrac = 0.0;
-
-        /// <summary>
         /// Азимут фронта сцены в мировых осях: мир призрака = оси датасета (heading абсолютный), а фронт,
         /// откуда смотрит фронтальная камера c05, — азимут ~180° (позиция c05 из setting7_1). Смещение
         /// подобрано сравнением проекции скелета с keypoints2d: без него все ракурсы перевёрнуты спереди/сзади.
@@ -227,6 +225,9 @@ namespace PlayerTrial
         private const double StageFrontOffsetRad = Math.PI;
 
         private double cameraYawRad;
+
+        /// <summary>Цель камеры сцены в мире, м (S26): из SceneFollower при framed, иначе (0, 0); точка (targetXm, 0, targetZm) проецируется в (cx, FloorScreenY).</summary>
+        private double targetXm, targetZm;
 
         /// <summary>Азимут камеры сцены (S18): радиан относительно фронта сцены; 0 — фронтальный вид (c05).</summary>
         public double CameraYawRad
@@ -239,29 +240,25 @@ namespace PlayerTrial
             }
         }
 
-        private double frameZoom = 1.0;
-
-        /// <summary>
-        /// Зум кадра сцены призраков (S21): масштаб сцены умножается на FrameZoom (1.0..3.0); центр
-        /// масштабирования — пол под танцором (E9): точка (cx, экранная высота линии пола при
-        /// FrameZoom=1). Стопы, зелёная линия пола и стрелка не уходят за нижнюю кромку, фигура
-        /// растёт вверх от пола; на больших зумах может срезаться верх. Сетка и стрелка
-        /// масштабируются согласованно (рисуются той же проекцией), подпись панели не зумится.
-        /// </summary>
-        public double FrameZoom
-        {
-            get => frameZoom;
-            set
-            {
-                frameZoom = Math.Max(1.0, Math.Min(3.0, value));
-                InvalidateVisual();
-            }
-        }
-
         private CanonicalFrame? reference;
         private CanonicalFrame? user;
         private double[]? userDeviation;
         private GhostLengths lengths = GhostLengths.FromLeg(0.8);
+
+        /// <summary>Следящий кадр сцены (S26, T24): масштаб, линия пола и цель камеры из рамки танцора на видео.</summary>
+        private readonly SceneFollower sceneFollower = new SceneFollower();
+
+        /// <summary>Последний кадр сцены от SceneFollower.</summary>
+        private SceneFollower.Frame sceneFrame;
+
+        /// <summary>Кадр сцены ведётся SceneFollower (рамка видео пришла хотя бы раз).</summary>
+        private bool framed;
+
+        /// <summary>Последний известный корень эталона в мире (цель камеры), старт (0, 0, 0).</summary>
+        private GhostVec lastRoot;
+
+        /// <summary>Поправка высоты корня эталона, доли длины ноги (S32).</summary>
+        private double groundShiftU;
 
         public GhostCanvas()
         {
@@ -287,49 +284,125 @@ namespace PlayerTrial
             InvalidateVisual();
         }
 
+        /// <summary>
+        /// Кадр сцены из рамки танцора на видео (S26): hasBox — есть ли рамка (ScreenBox.IsValid);
+        /// heightPx, bottomPx, centerXpx — рамка танцора в пикселях панели видео; panelW, panelH — размер
+        /// этой панели; sliderZoom — множитель слайдера «Кадр» (нужен только запасному широкому виду).
+        /// Призрак получает тот же размер на экране, что танцор, стоит на той же линии ног, камера следует
+        /// за корнем эталона.
+        /// </summary>
+        public void SetVideoBox(bool hasBox, double heightPx, double bottomPx, double centerXpx, double panelW, double panelH, double sliderZoom)
+        {
+            if (reference != null)
+            {
+                lastRoot = RootOf(reference, lengths);
+            }
+
+            sceneFrame = sceneFollower.Update(hasBox, heightPx, bottomPx, centerXpx, lengths.HeightM, panelW, panelH, sliderZoom, lastRoot.X, lastRoot.Z);
+            framed = true;
+            InvalidateVisual();
+        }
+
+        /// <summary>Задать поправку высоты корня эталона (S32), доли длины ноги.</summary>
+        public void SetGroundShift(double legUnits)
+        {
+            groundShiftU = legUnits;
+            InvalidateVisual();
+        }
+
+        /// <summary>
+        /// Насколько стопы прямой кинематики эталона висят над полом (S32), доли длины ноги: для каждого кадра трека
+        /// берётся низ нижней стопы (лодыжка минус радиус капсулы голени 0.12 * Shin) при единичной длине ноги,
+        /// результат — 10-й перцентиль по треку (самые нижние кадры: танцор стоит на полу). Отрицательное значение
+        /// означает, что стопы уходят под пол. 0, если в треке нет кадров с валидными ногами.
+        /// </summary>
+        public static double ComputeGroundShift(CanonicalTrack track)
+        {
+            if (track == null)
+            {
+                return 0;
+            }
+
+            var unit = GhostLengths.FromLeg(1.0);
+            var lows = new List<double>();
+            foreach (var f in track.Frames)
+            {
+                var legL = f.BoneValid[4] && f.BoneValid[6];
+                var legR = f.BoneValid[5] && f.BoneValid[7];
+                if (!legL && !legR)
+                {
+                    continue;
+                }
+
+                var j = Solve(f, unit, 0.0);
+                var low = legL && legR ? Math.Min(j.AnkleL.Y, j.AnkleR.Y) : legL ? j.AnkleL.Y : j.AnkleR.Y;
+                lows.Add(low - (0.12 * unit.Shin));
+            }
+
+            if (lows.Count == 0)
+            {
+                return 0;
+            }
+
+            lows.Sort();
+            return lows[(int)Math.Floor(0.10 * (lows.Count - 1))];
+        }
+
         protected override void OnRender(DrawingContext dc)
         {
             var w = ActualWidth;
             var h = ActualHeight;
+
+            // до первого тика с рамкой (S26) запасной широкий вид тоже ведёт SceneFollower:
+            // рендер всегда идёт по одним формулам кадра
+            if (!framed)
+            {
+                SetVideoBox(false, 0, 0, 0, w, h, 1.0);
+            }
+
+            // цель камеры (S26): следование за корнем эталона из SceneFollower
+            targetXm = sceneFrame.TargetXm;
+            targetZm = sceneFrame.TargetZm;
+
             dc.DrawRectangle(Background, null, new Rect(0, 0, w, h));
             if (w < 50 || h < 50)
             {
                 return;
             }
 
-            // масштаб и центр как в прежнем виде спереди: пол на 0.86h при yaw 0, фигура ~1.7 м на 3.2 м высоты.
-            // Зум кадра (S21, E9): масштаб умножается на FrameZoom, неподвижная точка — пол под танцором:
-            // (cx, экранная высота линии пола при базовом масштабе FrameZoom=1). Стопы, зелёная линия
-            // пола и стрелка остаются у низа панели при любом зуме, фигура растёт вверх от пола;
-            // большие зумы могут срезать верх, край канвы срезает лишнее (ClipToBounds в конструкторе)
-            var baseScale = h / 3.2;
-            var leg = Math.Max(lengths.LegLength, 0.1);
-            var anchorYm = FloorAnchorAboveFloorFrac * leg; // лёгкий запас над полом (E9)
-            var anchorScreenY = (h * 0.86) - (anchorYm * baseScale); // якорь (пол) при базовом масштабе
-            var cx = w / 2;
-            var scale = baseScale * FrameZoom;
-            // сдвиг камеры держит точку anchorYm мира на anchorScreenY при любом масштабе; при FrameZoom=1
-            // сворачивается к прежней формуле 0.86h - SceneCenterYm*baseScale (zoom 100 = прежний кадр)
-            var cy = anchorScreenY - ((SceneCenterYm - anchorYm) * scale);
+            // масштаб и центр от SceneFollower (S26): рамка танцора на видео, до неё — запасной
+            // широкий вид; точка (targetXm, 0, targetZm) проецируется в (cx, FloorScreenY)
+            var scale = sceneFrame.ScalePxPerM;
+            if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            {
+                scale = h / 3.2;
+            }
+
+            var cx = sceneFrame.CenterScreenX;
+            var cy = sceneFrame.FloorScreenY - (SceneCenterYm * scale);
+
             DrawFloor(dc, w, h, cx, cy, scale);
             if (reference != null)
             {
-                DrawGhost(dc, reference, ReferenceColor, ReferenceSkin, null, 1.0, cx, cy, scale);
+                DrawGhost(dc, reference, ReferenceColor, ReferenceSkin, null, 1.0, cx, cy, scale, -groundShiftU);
             }
 
             if (user != null)
             {
-                DrawGhost(dc, user, UserBaseColor, UserSkin, userDeviation, 0.85, cx, cy, scale);
+                DrawGhost(dc, user, UserBaseColor, UserSkin, userDeviation, 0.85, cx, cy, scale, 0.0);
             }
         }
 
         /// <summary>
-        /// Проекция точки мира (S18): поворот мира на -(yaw + фронт сцены) вокруг вертикали матрицей 3x3,
-        /// затем камера на D м: f = D / (D + pz''), экран x' = cx + px''·f·s, y' = cy - (py - центр)·f·s.
+        /// Проекция точки мира (S18) относительно цели камеры (S26): сначала вычитается (targetXm, targetZm),
+        /// затем поворот мира на -(yaw + фронт сцены) вокруг вертикали матрицей 3x3, камера на D м:
+        /// f = D / (D + pz''), экран x' = cx + px''·f·s, y' = cy - (py - центр)·f·s.
         /// Без зеркала: вид призрака совпадает с ракурсом видео (сверено с keypoints2d по всем камерам).
         /// </summary>
         private Point Project(double x, double y, double z, double cx, double cy, double scale)
         {
+            x -= targetXm;
+            z -= targetZm;
             var th = cameraYawRad + StageFrontOffsetRad;
             var c = Math.Cos(th);
             var s = Math.Sin(th);
@@ -342,6 +415,8 @@ namespace PlayerTrial
         /// <summary>Перспективный множитель f той же проекции по (x, z) — для радиуса капсулы и толщины линий.</summary>
         private double DepthFactor(double x, double z)
         {
+            x -= targetXm;
+            z -= targetZm;
             var th = cameraYawRad + StageFrontOffsetRad;
             var c = Math.Cos(th);
             var s = Math.Sin(th);
@@ -361,8 +436,9 @@ namespace PlayerTrial
                 FloorLine(dc, -2, m, 2, m, GridPen, cx, cy, scale);     // вдоль x на z = m
             }
 
-            // зелёная линия пола — ось x через центр сцены: при любом yaw f = 1, на высоте прежней линии пола
-            FloorLine(dc, -2, 0, 2, 0, FloorPen, cx, cy, scale);
+            // зелёная линия пола — ось x мира через цель камеры (S26): при любом yaw f = 1 в точке цели,
+            // её экранная точка — (cx, cy + SceneCenterYm*scale); сетка вокруг мирового начала не двигается
+            FloorLine(dc, targetXm - 4, 0, targetXm + 4, 0, FloorPen, cx, cy, scale);
             var floorScreenY = cy + (SceneCenterYm * scale);
             Text(dc, "пол", 6, floorScreenY - 16, 11, FloorPen.Brush);
 
@@ -378,16 +454,53 @@ namespace PlayerTrial
             dc.DrawLine(pen, Project(x1, 0, z1, cx, cy, scale), Project(x2, 0, z2, cx, cy, scale));
         }
 
-        /// <summary>
-        /// Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям
-        /// канонической позы. Разметка переда/зада (S20): капсулы тремя слоями (база + перед/зад со смещением в 3D по
-        /// fwdT до проекции, ближний слой поверх дальнего), панели торса ±fwdT*0.08*leg, бейсболка с козырьком вперёд
-        /// по heading, стрелка направления на полу от проекции корня вперёд по heading.
-        /// </summary>
-        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, GhostSkin skin, double[]? deviation, double opacity, double cx, double cy, double scale)
+        /// <summary>Горизонтальный корень позы в мире: heading-фрейм на RootForward/RootSide (высота добавляется отдельно в Solve).</summary>
+        private static GhostVec RootOf(CanonicalFrame f, GhostLengths len)
         {
-            var l = lengths;
-            var leg = Math.Max(l.LegLength, 0.1);
+            var leg = Math.Max(len.LegLength, 0.1);
+            var fwdH = new GhostVec(Math.Sin(f.HeadingRad), 0, Math.Cos(f.HeadingRad));
+            var leftH = new GhostVec(fwdH.Z, 0, -fwdH.X);
+            return (fwdH * (f.RootForward * leg)) + (leftH * (f.RootSide * leg));
+        }
+
+        /// <summary>Суставы фигуры призрака в метрах (S20, S32): мировой фрейм и вся цепочка от корня до стоп.</summary>
+        private readonly struct GhostJoints
+        {
+            public GhostJoints(GhostVec fwdH, GhostVec leftH, GhostVec up, GhostVec side, GhostVec fwdT, GhostVec root,
+                    GhostVec hipL, GhostVec hipR, GhostVec neck, GhostVec shL, GhostVec shR,
+                    GhostVec elbowL, GhostVec elbowR, GhostVec wristL, GhostVec wristR,
+                    GhostVec kneeL, GhostVec kneeR, GhostVec ankleL, GhostVec ankleR, GhostVec headC)
+            {
+                FwdH = fwdH;
+                LeftH = leftH;
+                Up = up;
+                Side = side;
+                FwdT = fwdT;
+                Root = root;
+                HipL = hipL;
+                HipR = hipR;
+                Neck = neck;
+                ShL = shL;
+                ShR = shR;
+                ElbowL = elbowL;
+                ElbowR = elbowR;
+                WristL = wristL;
+                WristR = wristR;
+                KneeL = kneeL;
+                KneeR = kneeR;
+                AnkleL = ankleL;
+                AnkleR = ankleR;
+                HeadC = headC;
+            }
+
+            public readonly GhostVec FwdH, LeftH, Up, Side, FwdT, Root, HipL, HipR, Neck, ShL, ShR,
+                ElbowL, ElbowR, WristL, WristR, KneeL, KneeR, AnkleL, AnkleR, HeadC;
+        }
+
+        /// <summary>Прямая кинематика позы: rootShiftU — поправка высоты корня в долях длины ноги (0 у пользователя).</summary>
+        private static GhostJoints Solve(CanonicalFrame f, GhostLengths len, double rootShiftU)
+        {
+            var leg = Math.Max(len.LegLength, 0.1);
 
             // мировой фрейм: heading — азимут взгляда, lean — наклон вверх-торса вперёд, turn — скрутка вокруг вертикали
             var fwdH = new GhostVec(Math.Sin(f.HeadingRad), 0, Math.Cos(f.HeadingRad));
@@ -396,7 +509,45 @@ namespace PlayerTrial
             var side = (leftH * Math.Cos(f.TorsoTurnRad) + fwdH * Math.Sin(f.TorsoTurnRad)).Orthogonalized(up);
             var fwdT = GhostVec.Cross(side, up);
 
-            var root = (fwdH * (f.RootForward * leg)) + (leftH * (f.RootSide * leg)) + (new GhostVec(0, f.RootHeight * leg, 0));
+            GhostVec Bone(int i)
+            {
+                var v = new GhostVec(f.Bones[i * 3], f.Bones[(i * 3) + 1], f.Bones[(i * 3) + 2]);
+                return (v.X * side) + (v.Y * up) + (v.Z * fwdT);
+            }
+
+            var root = RootOf(f, len) + (new GhostVec(0, (f.RootHeight + rootShiftU) * leg, 0));
+
+            var hipL = root + (side * len.HalfHip);
+            var hipR = root - (side * len.HalfHip);
+            var neck = root + (up * len.TorsoLen);
+            var shL = neck + (side * len.HalfShoulder);
+            var shR = neck - (side * len.HalfShoulder);
+            var elbowL = shL + (Bone(0) * len.UpperArm);
+            var elbowR = shR + (Bone(1) * len.UpperArm);
+            var wristL = elbowL + (Bone(2) * len.LowerArm);
+            var wristR = elbowR + (Bone(3) * len.LowerArm);
+            var kneeL = hipL + (Bone(4) * len.Thigh);
+            var kneeR = hipR + (Bone(5) * len.Thigh);
+            var ankleL = kneeL + (Bone(6) * len.Shin);
+            var ankleR = kneeR + (Bone(7) * len.Shin);
+            var headC = neck + (up * len.NeckToHead);
+
+            return new GhostJoints(fwdH, leftH, up, side, fwdT, root, hipL, hipR, neck, shL, shR,
+                    elbowL, elbowR, wristL, wristR, kneeL, kneeR, ankleL, ankleR, headC);
+        }
+
+        /// <summary>
+        /// Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям
+        /// канонической позы. Разметка переда/зада (S20): капсулы тремя слоями (база + перед/зад со смещением в 3D по
+        /// fwdT до проекции, ближний слой поверх дальнего), панели торса ±fwdT*0.08*leg, бейсболка с козырьком вперёд
+        /// по heading, стрелка направления на полу от проекции корня вперёд по heading.
+        /// rootShiftU — сдвиг корня по вертикали в долях длины ноги (S32: эталон опускается на пол, у пользователя 0).
+        /// </summary>
+        private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, GhostSkin skin, double[]? deviation, double opacity, double cx, double cy, double scale, double rootShiftU)
+        {
+            var l = lengths;
+            var j = Solve(f, l, rootShiftU);
+            var leg = Math.Max(l.LegLength, 0.1);
 
             // экран: 3D-проекция сцены (S18), зеркало внутри Project; F — перспективный множитель для радиусов
             Point P(GhostVec p) => Project(p.X, p.Y, p.Z, cx, cy, scale);
@@ -421,7 +572,7 @@ namespace PlayerTrial
                 var width = 2 * radiusM * scale * 0.5 * (F(a) + F(b));
                 var paint = deviation != null ? DeviationColor(deviation[index], baseColor) : skin.Rim;
                 Line(a, b, width * RimWidthFrac, paint, 1.0);
-                var off = fwdT * (radiusM * FrontBackOffsetFrac);
+                var off = j.FwdT * (radiusM * FrontBackOffsetFrac);
                 var layerWidth = width * FrontBackWidthFrac;
                 if (F(a + off) >= F(a - off))
                 {
@@ -435,36 +586,15 @@ namespace PlayerTrial
                 }
             }
 
-            GhostVec Bone(int i)
-            {
-                var v = new GhostVec(f.Bones[i * 3], f.Bones[(i * 3) + 1], f.Bones[(i * 3) + 2]);
-                return (v.X * side) + (v.Y * up) + (v.Z * fwdT);
-            }
-
-            var hipL = root + (side * l.HalfHip);
-            var hipR = root - (side * l.HalfHip);
-            var neck = root + (up * l.TorsoLen);
-            var shL = neck + (side * l.HalfShoulder);
-            var shR = neck - (side * l.HalfShoulder);
-            var elbowL = shL + (Bone(0) * l.UpperArm);
-            var elbowR = shR + (Bone(1) * l.UpperArm);
-            var wristL = elbowL + (Bone(2) * l.LowerArm);
-            var wristR = elbowR + (Bone(3) * l.LowerArm);
-            var kneeL = hipL + (Bone(4) * l.Thigh);
-            var kneeR = hipR + (Bone(5) * l.Thigh);
-            var ankleL = kneeL + (Bone(6) * l.Shin);
-            var ankleR = kneeR + (Bone(7) * l.Shin);
-            var headC = neck + (up * l.NeckToHead);
-
             // стрелка направления на полу (S20): от проекции корня на пол вперёд по heading, до полупрозрачной фигуры
-            var rootFloor = new GhostVec(root.X, 0, root.Z);
+            var rootFloor = new GhostVec(j.Root.X, 0, j.Root.Z);
             var arrowLen = ArrowLengthFrac * leg;
-            var arrowTip = rootFloor + (fwdH * arrowLen);
+            var arrowTip = rootFloor + (j.FwdH * arrowLen);
             var arrowWidth = Math.Max(2.0 * F(rootFloor), 1.5);
             Line(rootFloor, arrowTip, arrowWidth, baseColor, ArrowOpacity);
             var barbLen = arrowLen * 0.3;
-            Line(arrowTip, arrowTip + (RotateY(fwdH, ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
-            Line(arrowTip, arrowTip + (RotateY(fwdH, -ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
+            Line(arrowTip, arrowTip + (RotateY(j.FwdH, ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
+            Line(arrowTip, arrowTip + (RotateY(j.FwdH, -ArrowBarbAngleRad) * (-barbLen)), arrowWidth * 0.8, baseColor, ArrowOpacity);
 
             dc.PushOpacity(opacity);
 
@@ -491,17 +621,17 @@ namespace PlayerTrial
             }
 
             var torsoBrush = new SolidColorBrush(torsoColor);
-            var fNeck = F(neck); // толщина торса и позвоночника по глубине шеи
-            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale * fNeck) { LineJoin = PenLineJoin.Round }, Quad(P(shL), P(shR), P(hipR), P(hipL)));
+            var fNeck = F(j.Neck); // толщина торса и позвоночника по глубине шеи
+            dc.DrawGeometry(torsoBrush, new Pen(torsoBrush, 0.04 * scale * fNeck) { LineJoin = PenLineJoin.Round }, Quad(P(j.ShL), P(j.ShR), P(j.HipR), P(j.HipL)));
 
             // панели торса: те же слои перед/зад, что у капсул; ближний к камере поверх
-            var panelOff = fwdT * (TorsoPanelOffsetFrac * leg);
+            var panelOff = j.FwdT * (TorsoPanelOffsetFrac * leg);
             var panelPenWidth = 0.02 * scale * fNeck;
-            var frontNearer = F(neck + panelOff) >= F(neck - panelOff);
+            var frontNearer = F(j.Neck + panelOff) >= F(j.Neck - panelOff);
             void Panel(GhostVec off, Color color, double alpha)
             {
                 var brush = Fade(color, alpha);
-                dc.DrawGeometry(brush, new Pen(brush, panelPenWidth) { LineJoin = PenLineJoin.Round }, Quad(P(shL + off), P(shR + off), P(hipR + off), P(hipL + off)));
+                dc.DrawGeometry(brush, new Pen(brush, panelPenWidth) { LineJoin = PenLineJoin.Round }, Quad(P(j.ShL + off), P(j.ShR + off), P(j.HipR + off), P(j.HipL + off)));
             }
 
             if (frontNearer)
@@ -515,25 +645,33 @@ namespace PlayerTrial
                 Panel(-panelOff, skin.Back, skin.PanelBackOpacity);
             }
 
-            dc.DrawLine(new Pen(torsoBrush, 0.02 * scale * fNeck) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(root), P(neck));
+            dc.DrawLine(new Pen(torsoBrush, 0.02 * scale * fNeck) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(j.Root), P(j.Neck));
 
-            // голова и бейсболка (S20): купол — дуга по верхней половине эллипса головы, козырёк — плоский
-            // четырёхугольник от кромки купола вперёд по heading на уровне середины головы; сзади козырёк
-            // за головой — рисуется до эллипса, спереди — после
-            var fHead = F(headC);
-            var headP = P(headC);
+            // голова и бейсболка (S20, S27): купол — верх эллипса головы над хордой, увеличен на 6%,
+            // сплошная заливка Cap — виден спереди, сзади и сбоку; козырёк наклонён вниз на 22° и
+            // торчит вперёд по heading — маркер переда фигуры. Порядок: сзади козырёк за головой —
+            // рисуется до эллипса, спереди — после эллипса и до купола
+            var fHead = F(j.HeadC);
+            var headP = P(j.HeadC);
             var rx = l.HeadR * scale * fHead;
             var ry = l.HeadR * 1.15 * scale * fHead;
-            var halfBrim = 0.95 * l.HeadR;
-            var brimBaseL = headC - (leftH * halfBrim);
-            var brimBaseR = headC + (leftH * halfBrim);
-            var brimFwd = fwdH * (CapBrimForwardFrac * l.HeadR);
+            var capK = 0.25; // хорда купола на 0.25*ry выше центра эллипса головы
+            var capRx = rx * 1.06;
+            var capRy = ry * 1.06;
+            var capHalfW = capRx * Math.Sqrt(1 - (capK * capK));
+            var capChordY = headP.Y - (capK * capRy);
+            var tilt = 22 * Math.PI / 180; // козырёк наклонён вниз (S27)
+            var fv = (j.FwdH * Math.Cos(tilt)) - (new GhostVec(0, 1, 0) * Math.Sin(tilt));
+            var brimBaseL = j.HeadC - (j.LeftH * (0.85 * l.HeadR)) + (new GhostVec(0, 1, 0) * (0.2 * l.HeadR));
+            var brimBaseR = j.HeadC + (j.LeftH * (0.85 * l.HeadR)) + (new GhostVec(0, 1, 0) * (0.2 * l.HeadR));
+            var brimTipL = brimBaseL + (fv * (CapBrimForwardFrac * l.HeadR)) + (j.LeftH * (0.55 * l.HeadR));
+            var brimTipR = brimBaseR + (fv * (CapBrimForwardFrac * l.HeadR)) - (j.LeftH * (0.55 * l.HeadR));
             void Brim()
             {
-                dc.DrawGeometry(Fade(skin.Brim, 1.0), null, Quad(P(brimBaseL), P(brimBaseR), P(brimBaseR + brimFwd), P(brimBaseL + brimFwd)));
+                dc.DrawGeometry(Fade(skin.Brim, 1.0), null, Quad(P(brimBaseL), P(brimBaseR), P(brimTipR), P(brimTipL)));
             }
 
-            var brimAhead = F(headC + (brimFwd * 0.5)) > fHead;
+            var brimAhead = F(j.HeadC + (fv * (CapBrimForwardFrac * l.HeadR * 0.5))) > fHead;
             if (!brimAhead)
             {
                 Brim();
@@ -545,25 +683,25 @@ namespace PlayerTrial
                 Brim();
             }
 
-            var dome = new StreamGeometry();
-            using (var ctx = dome.Open())
+            var crown = new StreamGeometry();
+            using (var ctx = crown.Open())
             {
-                ctx.BeginFigure(new Point(headP.X - rx, headP.Y), false, false);
-                ctx.ArcTo(new Point(headP.X + rx, headP.Y), new Size(rx, ry), 0, false, SweepDirection.Clockwise, true, false);
+                ctx.BeginFigure(new Point(headP.X - capHalfW, capChordY), true, true);
+                ctx.ArcTo(new Point(headP.X + capHalfW, capChordY), new Size(capRx, capRy), 0, false, SweepDirection.Clockwise, true, false);
             }
 
-            dome.Freeze();
-            dc.DrawGeometry(null, new Pen(Fade(skin.Cap, 1.0), Math.Max(rx * 0.18, 1.5)) { LineJoin = PenLineJoin.Round }, dome);
+            crown.Freeze();
+            dc.DrawGeometry(Fade(skin.Cap, 1.0), null, crown);
 
             // капсулы по костям: индекс отклонения = порядок CanonicalFrame.BoneNames
-            Capsule(0, shL, elbowL, 0.17 * l.UpperArm);
-            Capsule(1, shR, elbowR, 0.17 * l.UpperArm);
-            Capsule(2, elbowL, wristL, 0.14 * l.LowerArm);
-            Capsule(3, elbowR, wristR, 0.14 * l.LowerArm);
-            Capsule(4, hipL, kneeL, 0.17 * l.Thigh);
-            Capsule(5, hipR, kneeR, 0.17 * l.Thigh);
-            Capsule(6, kneeL, ankleL, 0.12 * l.Shin);
-            Capsule(7, kneeR, ankleR, 0.12 * l.Shin);
+            Capsule(0, j.ShL, j.ElbowL, 0.17 * l.UpperArm);
+            Capsule(1, j.ShR, j.ElbowR, 0.17 * l.UpperArm);
+            Capsule(2, j.ElbowL, j.WristL, 0.14 * l.LowerArm);
+            Capsule(3, j.ElbowR, j.WristR, 0.14 * l.LowerArm);
+            Capsule(4, j.HipL, j.KneeL, 0.17 * l.Thigh);
+            Capsule(5, j.HipR, j.KneeR, 0.17 * l.Thigh);
+            Capsule(6, j.KneeL, j.AnkleL, 0.12 * l.Shin);
+            Capsule(7, j.KneeR, j.AnkleR, 0.12 * l.Shin);
 
             dc.Pop();
         }

@@ -285,6 +285,8 @@ namespace DanceLab.View.Tests
             Assert.Equal(320.0, r.Box.CenterX, 9);
             Assert.Equal((390.0 - 250.0) * z, r.Box.Width, 9);
             Assert.Equal((260.0 + FrameFollower.ShoePadRows - 100.0) * z, r.Box.Height, 9);
+            // (E34, S32) линия обуви: FeetY = Bottom − (ShoePadRows − FootRows)·s·z, здесь s = 1 (окно = источник 640x360)
+            Assert.Equal(r.Box.Bottom - ((FrameFollower.ShoePadRows - FrameFollower.FootRows) * 1.0 * z), r.Box.FeetY, 9);
         }
 
         [Fact]
