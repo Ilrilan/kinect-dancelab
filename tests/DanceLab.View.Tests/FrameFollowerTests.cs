@@ -299,5 +299,50 @@ namespace DanceLab.View.Tests
 
             Assert.False(r.Box.IsValid);
         }
+
+        [Fact]
+        public void LastTarget_WithBox_MatchesIndependentFormula()
+        {
+            // (E37/T34, S34) LastTarget при наличии рамки: три кадра в окне ±0.7 с — объединение
+            // bbox тест считает независимо, без общего хелпера ZoomTarget; s = 1 (окно = источник
+            // 640x360), паддинг 1.25 и ShoePadRows; MaxPan по формуле от возвращённого зума
+            var f = new FrameFollower(SingleCam(
+                new[] { 0.5, 250.0, 100.0, 390.0, 260.0 },
+                new[] { 0.9, 230.0, 120.0, 410.0, 280.0 },
+                new[] { 1.1, 260.0, 90.0, 400.0, 270.0 }));
+
+            var r = Tick(f, 1.0);
+
+            // независимый расчёт: окно ±0.7 с захватывает все три кадра, объединение bbox
+            var uMin = Math.Min(250.0, Math.Min(230.0, 260.0));
+            var vMin = Math.Min(100.0, Math.Min(120.0, 90.0));
+            var uMax = Math.Max(390.0, Math.Max(410.0, 400.0));
+            var vMax = Math.Max(260.0, Math.Max(280.0, 270.0));
+            var bw = (uMax - uMin) * 1.25;
+            var bh = (vMax + FrameFollower.ShoePadRows - vMin) * 1.25;
+            var zAutoExpected = Math.Max(1.0, Math.Min(3.0, Math.Min(640.0 / bw, 360.0 / bh)));
+            var maxPanXExpected = Math.Max(0.0, ((r.Zoom * 1.0 * 640.0) - 640.0) / 2.0);
+            var maxPanYExpected = Math.Max(0.0, ((r.Zoom * 1.0 * 360.0) - 360.0) / 2.0);
+
+            Assert.Equal(zAutoExpected, f.LastTarget.ZAutoTarget, 12);
+            Assert.Equal(maxPanXExpected, f.LastTarget.MaxPanX, 12);
+            Assert.Equal(maxPanYExpected, f.LastTarget.MaxPanY, 12);
+            // цель не в клампе снизу и зум сошёлся выше 1: пределы панорамы не вырождены в 0
+            Assert.True(zAutoExpected > 1.0 && f.LastTarget.MaxPanX > 0.0 && f.LastTarget.MaxPanY > 0.0);
+        }
+
+        [Fact]
+        public void LastTarget_MissingCamera_ZAutoTargetIsFallback()
+        {
+            // (E37/T34, S34) запасной вид (камеры без данных): ZAutoTarget = AutoZoomFallback;
+            // пределы панорамы — по формуле от возвращённого зума (1.6 при слайдере 1, s = 1)
+            var f = new FrameFollower(SingleCam(new[] { 1.0, 250.0, 100.0, 390.0, 260.0 }));
+
+            var r = Tick(f, 1.0, camera: "c99");
+
+            Assert.Equal(FrameFollower.AutoZoomFallback, f.LastTarget.ZAutoTarget, 12);
+            Assert.Equal(Math.Max(0.0, ((r.Zoom * 1.0 * 640.0) - 640.0) / 2.0), f.LastTarget.MaxPanX, 12);
+            Assert.Equal(Math.Max(0.0, ((r.Zoom * 1.0 * 360.0) - 360.0) / 2.0), f.LastTarget.MaxPanY, 12);
+        }
     }
 }

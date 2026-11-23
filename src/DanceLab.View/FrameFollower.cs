@@ -70,6 +70,30 @@ namespace DanceLab.View
     }
 
     /// <summary>
+    /// Цель и пределы панорамы последнего тика <see cref="FrameFollower.Update"/> (S34, T34):
+    /// числовой отчёт тура — zAutoTarget и maxPanX/maxPanY каждого тика записываются, чтобы
+    /// тур мог дописать их в отчёт; на поведение следящего кадра значения не влияют.
+    /// </summary>
+    public readonly struct FrameTarget
+    {
+        /// <summary>Цель авто-зума тика до сглаживания: по рамке либо AutoZoomFallback в запасном виде.</summary>
+        public readonly double ZAutoTarget;
+
+        /// <summary>Предел панорамы тика по горизонтали, пиксели окна (окно не выходит за края контента).</summary>
+        public readonly double MaxPanX;
+
+        /// <summary>Предел панорамы тика по вертикали, пиксели окна.</summary>
+        public readonly double MaxPanY;
+
+        public FrameTarget(double zAutoTarget, double maxPanX, double maxPanY)
+        {
+            ZAutoTarget = zAutoTarget;
+            MaxPanX = maxPanX;
+            MaxPanY = maxPanY;
+        }
+    }
+
+    /// <summary>
     /// Следящий кадр (S21, T12): авто-зум и панорама видео по bbox танцора из cams.json
     /// текущей камеры. zAuto = clamp(min(winW/(bw+pad), winH/(bh+pad)), 1, 3), pad = 25% габарита:
     /// вертикальный паддинг асимметричный (верхней кромке 40%, нижней 60%), низ bbox расширен
@@ -81,6 +105,8 @@ namespace DanceLab.View
     /// контента. Нет камеры/данных — fallback: база zAuto = 1.6, центр = центр кадра.
     /// Чистая математика без WPF-типов (T22, аудит P2.12): окно и видео задаются числами,
     /// состояние сглаживания внутри; формулы перенесены дословно из tools/player_trial/MainWindow.cs.
+    /// Числовой отчёт тура (S34, T34): каждый Update заполняет LastTarget — цель авто-зума
+    /// тика до сглаживания и пределы панорамы тика (<see cref="FrameTarget"/>), для отчёта тура.
     /// </summary>
     public sealed class FrameFollower
     {
@@ -90,6 +116,12 @@ namespace DanceLab.View
         public const double FootRows = 30.0;        // стопа ниже ключевой точки лодыжки, строк источника (типичная обувь; ShoePadRows остаётся запасом кадрирования)
         public const double HeadShiftFrac = 0.07;   // сдвиг центра окна вверх (запас голове), доли высоты окна
         public const double MaxTotalZoom = 9.0;     // предел итогового зума: 3.0 (авто) × 3.0 (слайдер)
+
+        /// <summary>
+        /// Числовой отчёт тура (S34, T34): цель авто-зума последнего тика Update до сглаживания
+        /// и пределы панорамы этого тика; заполняется в конце каждого Update, поведение не меняет.
+        /// </summary>
+        public FrameTarget LastTarget { get; private set; }
 
         private readonly Dictionary<string, CamTrack> cameras;
         private double smoothedZoomAuto = AutoZoomFallback;
@@ -197,6 +229,9 @@ namespace DanceLab.View
             {
                 screenBox = default; // камеры/данных нет — рамки нет
             }
+
+            // числовой отчёт тура (S34): только запись трёх чисел, поведение не меняет
+            LastTarget = new FrameTarget(zAutoTarget, maxPanX, maxPanY);
 
             return (z, smoothedPanX, smoothedPanY, screenBox);
         }
