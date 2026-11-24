@@ -1,10 +1,11 @@
 """Экспорт канонической позы AIST++ в <seq>.canonical.json (контракт specs/player/trial.md).
 
---source smpl (умолчание, canonical-pose S12, основной путь): прямая кинематика
-SMPL по smpl_poses из data/aist/extracted/motions/<seq>.pkl. Модель (нулевая форма)
-в data/smpl/.../basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl; формула FK и проверка --
-docs/aist-format-findings.md (расхождение с точками около 3 см). Маппинг суставов
-(порядок подтверждён по модели, см. smpl_fk.py; canonical-pose Вариант A):
+--source smpl (умолчание для --seq, canonical-pose S12, основной путь): прямая
+кинематика SMPL по smpl_poses из data/aist/extracted/motions/<seq>.pkl. Модель
+(нулевая форма) в data/smpl/.../basicmodel_neutral_lbs_10_207_0_v1.1.0.pkl;
+формула FK и проверка -- docs/aist-format-findings.md (расхождение с точками
+около 3 см). Маппинг суставов (порядок подтверждён по модели, см. smpl_fk.py;
+canonical-pose Вариант A):
   root  = pelvis (0)          chest = spine2 (6)   -- в JSON не входит
   neck  = середина плеч SMPL (16, 17) -- конвенция T13, как у живой позы
   head  = head (15)
@@ -15,6 +16,10 @@ docs/aist-format-findings.md (расхождение с точками окол�
 data/aist/extracted/keypoints3d/<seq>.pkl, ключ keypoints3d_optim (N, 17, 3),
 сантиметры, ось y вверх, x в сторону левого плеча, лицо по +z
 (docs/aist-format-findings.md).
+
+--source auto (умолчание для --batch): smpl, если существует
+motions/<seq>.pkl в --src-smpl, иначе coco. Явные smpl и coco работают как
+раньше (в том числе прежнее сообщение об отсутствии файла движений).
 
 Построение из COCO-17 (по Contract в trial.md):
   root  = середина бёдер (lhip, rhip)
@@ -46,8 +51,26 @@ pkl (микросекунды), в JSON переводится в секунды
 Формат: {"formatVersion":1, "fps":60, "frameCount":N,
 "cameras":{"c01":{"frames":[{"t":..,"root":[u,v],"bbox":[..]},...]},...}}.
 
-Запуск: python canonical_export.py --seq <имя cAll> [--source smpl|coco]
-    [--src ...] [--src-smpl ...] [--smpl-model ...] [--src2d ...] [--out ...]
+Режимы запуска:
+  python canonical_export.py --seq <имя cAll> [--source smpl|coco]
+      [--src ...] [--src-smpl ...] [--smpl-model ...] [--src2d ...] [--out ...]
+    одиночная запись, прежний контрольный вывод и санити дословно.
+  python canonical_export.py --batch <файл> [--source smpl|coco|auto] [остальные как выше]
+    список последовательностей: первый токен строки -- имя с cAll, пустые строки
+    и строки с # пропускаются; неудачная запись не останавливает остальные.
+    Пишет <out>/batch-summary.tsv (заголовок + строка на запись), столбцы:
+      seq, source, frames, skipped, durationSec, legLenCm, floorFlag,
+      minRootHeight, maxDHeadingDeg, headingJumpFrames, maxDBoneDeg,
+      boneJumpFrames
+    durationSec = frames/60 (0.01); legLenCm как в canonical.json; floorFlag = 1,
+    если пол взят глобальный (ветка «подозрителен»); minRootHeight -- минимум
+    root.height (4 знака). Скачки -- между соседними выведенными кадрами:
+    maxDHeadingDeg -- максимум |Δheading| в градусах (разница свёрнута в
+    -180..180), headingJumpFrames -- число пар с |Δheading| > 45°,
+    maxDBoneDeg -- максимум угла между направлениями одной кости по восьми
+    костям, boneJumpFrames -- число пар, где хотя бы одна кость повернулась
+    больше 60°. В stdout строка на запись и итог. Код возврата: 0 -- все записи
+    выведены, 1 -- хоть одна не удалась (список в stdout).
 Порядок COCO-17: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb,
 lwri, rwri, lhip, rhip, lkne, rkne, lank, rank.
 В JSON пишется поле "source" ("smpl" или "coco"); бандл фиксирует источник
@@ -98,6 +121,13 @@ CAM_SCORE_MIN = 0.3         # следящий кадр (S21/T12): бёдра с
 FLOOR_P2_GLOBAL = 71.6      # глобальная медиана ank_p2, см (findings)
 SOLE_OFFSET_CM = 6.4        # лодыжка-подошва, середина 6.2-6.6 (findings)
 WORLD_UP = np.array([0.0, 1.0, 0.0])
+# пороги скачков сводки (trial.md, Contract «Прогон по жанрам»)
+HEADING_JUMP_DEG = 45.0     # |Δheading| между соседними кадрами, выше -- скачок
+BONE_JUMP_DEG = 60.0        # поворот кости между соседними кадрами, выше -- скачок
+
+
+class ExportError(Exception):
+    """Ошибка построения одной записи (нет файла, неожиданные данные)."""
 
 
 def unit(v):
@@ -110,6 +140,44 @@ def frame_coords(v, left, up, fwd):
     return np.array([np.dot(v, left), np.dot(v, up), np.dot(v, fwd)])
 
 
+def wrap_deg(d):
+    """Угол в градусах, свёрнутый в -180..180."""
+    return (d + 180.0) % 360.0 - 180.0
+
+
+def jump_stats(frames):
+    """Скачки между соседними выведенными кадрами (по порядку списка frames).
+
+    Возвращает (maxDHeadingDeg, headingJumpFrames, maxDBoneDeg, boneJumpFrames):
+    максимум |Δheading| в градусах и число пар с |Δheading| > HEADING_JUMP_DEG;
+    максимум угла между направлениями одной кости по восьми костям и число пар,
+    где хотя бы одна кость повернулась больше BONE_JUMP_DEG.
+    """
+    max_dh = 0.0
+    head_jumps = 0
+    max_dbone = 0.0
+    bone_jumps = 0
+    for i in range(1, len(frames)):
+        prev, cur = frames[i - 1], frames[i]
+        dh = abs(wrap_deg(np.degrees(cur["root"]["heading"] - prev["root"]["heading"])))
+        if dh > max_dh:
+            max_dh = dh
+        if dh > HEADING_JUMP_DEG:
+            head_jumps += 1
+        any_bone = False
+        for name, _, _ in BONES:
+            a, b = prev["bones"][name], cur["bones"][name]
+            dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+            ang = np.degrees(np.arccos(max(-1.0, min(1.0, dot))))
+            if ang > max_dbone:
+                max_dbone = float(ang)
+            if ang > BONE_JUMP_DEG:
+                any_bone = True
+        if any_bone:
+            bone_jumps += 1
+    return max_dh, head_jumps, max_dbone, bone_jumps
+
+
 def export_cams(seq, kp2d_path, out_dir):
     """<seq>.cams.json для следящего кадра (trial S21/T12): по камерам c01..c09 кадры
     {"t": сек, "root": [u,v] (центр бёдер COCO 11/12), "bbox": [uMin,vMin,uMax,vMax] --
@@ -118,11 +186,11 @@ def export_cams(seq, kp2d_path, out_dir):
     пропускаются. Возвращает (путь, кадров всего, список пропущенных по камерам)."""
     data = safe_pickle.load(kp2d_path)
     if "keypoints2d" not in data or "timestamps" not in data:
-        sys.exit("нет ключей keypoints2d/timestamps: " + kp2d_path)
+        raise ExportError("нет ключей keypoints2d/timestamps: " + kp2d_path)
     K = np.asarray(data["keypoints2d"], dtype=np.float64)
     ts = np.asarray(data["timestamps"], dtype=np.float64).ravel()
     if K.ndim != 4 or K.shape[0] < 9:
-        sys.exit(f"ключ keypoints2d неожиданной формы {K.shape} (нужна (9, N, 17, 3)): " + kp2d_path)
+        raise ExportError(f"ключ keypoints2d неожиданной формы {K.shape} (нужна (9, N, 17, 3)): " + kp2d_path)
 
     n_frames = min(K.shape[1], len(ts))
     cams = {}
@@ -166,37 +234,31 @@ def export_cams(seq, kp2d_path, out_dir):
     return out_path, n_frames, skipped
 
 
-def main():
-    ap = argparse.ArgumentParser(description="AIST++ SMPL FK / keypoints3d_optim -> canonical.json (+ .cams.json)")
-    ap.add_argument("--seq", required=True, help="имя последовательности с cAll")
-    ap.add_argument("--source", choices=("smpl", "coco"), default="smpl",
-                    help="источник эталона: smpl = FK по smpl_poses (canonical-pose S12, "
-                         "основной путь), coco = keypoints3d_optim (прежний путь пробы)")
-    ap.add_argument("--src", default="data/aist/extracted/keypoints3d",
-                    help="каталог keypoints3d (для --source coco)")
-    ap.add_argument("--src-smpl", default="data/aist/extracted/motions",
-                    help="каталог motions pkl (для --source smpl)")
-    ap.add_argument("--smpl-model", default=DEFAULT_SMPL_MODEL,
-                    help="файл модели SMPL (нулевая форма)")
-    ap.add_argument("--src2d", default="data/aist/extracted/keypoints2d",
-                    help="каталог keypoints2d для <seq>.cams.json (следящий кадр, S21/T12)")
-    ap.add_argument("--out", default="data/derived/trial")
-    args = ap.parse_args()
+def export_one(seq, source, args, repo, verbose=True):
+    """Строит и пишет <seq>.canonical.json и <seq>.cams.json для одной записи.
 
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    source "auto": smpl, если существует motions/<seq>.pkl в --src-smpl, иначе coco.
+    verbose=True печатает прежний контрольный вывод одиночного --seq (дословно).
+    Ошибки -- ExportError (одиночный режим превращает её в sys.exit с тем же
+    текстом; в пакетном режиме запись помечается неудавшейся, остальные идут).
+    Возвращает строку сводки (столбцы batch-summary.tsv) словарём.
+    """
     src = args.src if os.path.isabs(args.src) else os.path.join(repo, args.src)
     src_smpl = args.src_smpl if os.path.isabs(args.src_smpl) else os.path.join(repo, args.src_smpl)
     smpl_model = args.smpl_model if os.path.isabs(args.smpl_model) else os.path.join(repo, args.smpl_model)
     src2d = args.src2d if os.path.isabs(args.src2d) else os.path.join(repo, args.src2d)
     out_dir = args.out if os.path.isabs(args.out) else os.path.join(repo, args.out)
 
-    if args.source == "smpl":
-        motion_path = os.path.join(src_smpl, args.seq + ".pkl")
+    if source == "auto":
+        source = "smpl" if os.path.isfile(os.path.join(src_smpl, seq + ".pkl")) else "coco"
+
+    if source == "smpl":
+        motion_path = os.path.join(src_smpl, seq + ".pkl")
         if not os.path.isfile(motion_path):
-            sys.exit(f"нет файла движений SMPL: {motion_path} "
-                     f"(для этой последовательности можно запустить с --source coco)")
+            raise ExportError(f"нет файла движений SMPL: {motion_path} "
+                              f"(для этой последовательности можно запустить с --source coco)")
         if not os.path.isfile(smpl_model):
-            sys.exit(f"нет модели SMPL: {smpl_model}")
+            raise ExportError(f"нет модели SMPL: {smpl_model}")
         mo = safe_pickle.load(motion_path)
         poses = np.asarray(mo["smpl_poses"], dtype=np.float64).reshape(-1, 24, 3)
         trans = np.asarray(mo["smpl_trans"], dtype=np.float64)
@@ -215,9 +277,9 @@ def main():
         H = W[:, smpl_fk.HEAD]                # голова -- сустав head
         root = W[:, smpl_fk.PELVIS]           # корень -- сустав pelvis (S12/Вариант A)
     else:
-        pkl_path = os.path.join(src, args.seq + ".pkl")
+        pkl_path = os.path.join(src, seq + ".pkl")
         if not os.path.isfile(pkl_path):
-            sys.exit(f"нет входного файла: {pkl_path}")
+            raise ExportError(f"нет входного файла: {pkl_path}")
 
         data = safe_pickle.load(pkl_path)
         K = np.asarray(data["keypoints3d_optim"], dtype=np.float64)
@@ -256,12 +318,13 @@ def main():
     # ---- пол (findings: правило оценки) ----
     ank_min = np.minimum(P[:, LANK, 1], P[:, RANK, 1])
     floor_p2 = float(np.percentile(ank_min, 2))
-    floor_flag = ""
-    if abs(floor_p2 - FLOOR_P2_GLOBAL) > 10.0:
+    floor_global = abs(floor_p2 - FLOOR_P2_GLOBAL) > 10.0
+    if floor_global:
         floor_y = FLOOR_P2_GLOBAL - SOLE_OFFSET_CM
         floor_flag = "  [ВНИМАНИЕ: пол по данным подозрителен, взят глобальный]"
     else:
         floor_y = floor_p2 - SOLE_OFFSET_CM
+        floor_flag = ""
 
     root0 = root[0]
     bones_out_dev = 0.0
@@ -311,34 +374,55 @@ def main():
 
     result = {
         "formatVersion": 1,
-        "source": args.source,
-        "sequence": args.seq,
-        "video": args.seq.replace("cAll", "c05") + ".mp4",
+        "source": source,
+        "sequence": seq,
+        "video": seq.replace("cAll", "c05") + ".mp4",
         "fps": 60,
         "frameCount": len(frames),
         "legLengthCm": round(leg_len, 1),
         "frames": frames,
     }
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, args.seq + ".canonical.json")
+    out_path = os.path.join(out_dir, seq + ".canonical.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=1)
 
     # ---- <seq>.cams.json: следящий кадр (S21/T12), если keypoints2d на месте ----
-    kp2d_path = os.path.join(src2d, args.seq + ".pkl")
+    kp2d_path = os.path.join(src2d, seq + ".pkl")
     if os.path.isfile(kp2d_path):
-        cams_path, cams_frames, cams_skipped = export_cams(args.seq, kp2d_path, out_dir)
-        print(f"cams.json: {cams_path}")
-        print(f"  камер: {len(cams_skipped)}, кадров: {cams_frames}, "
-              f"пропущено по камерам c01..c09: {cams_skipped}")
+        cams_path, cams_frames, cams_skipped = export_cams(seq, kp2d_path, out_dir)
+        if verbose:
+            print(f"cams.json: {cams_path}")
+            print(f"  камер: {len(cams_skipped)}, кадров: {cams_frames}, "
+                  f"пропущено по камерам c01..c09: {cams_skipped}")
     else:
-        print(f"cams.json не записан: нет {kp2d_path}")
+        if verbose:
+            print(f"cams.json не записан: нет {kp2d_path}")
+
+    # ---- сводка (столбцы batch-summary.tsv) ----
+    max_dh, head_jumps, max_dbone, bone_jumps = jump_stats(frames)
+    summary = {
+        "seq": seq,
+        "source": source,
+        "frames": len(frames),
+        "skipped": n_nan,
+        "durationSec": round(len(frames) / FPS, 2),
+        "legLenCm": round(leg_len, 1),
+        "floorFlag": 1 if floor_global else 0,
+        "minRootHeight": round(min(fr["root"]["height"] for fr in frames), 4),
+        "maxDHeadingDeg": round(max_dh, 2),
+        "headingJumpFrames": head_jumps,
+        "maxDBoneDeg": round(max_dbone, 2),
+        "boneJumpFrames": bone_jumps,
+    }
+    if not verbose:
+        return summary
 
     # ---- контрольные числа ----
-    print(f"последовательность: {args.seq}")
-    print(f"источник: {args.source}"
-          + (f", smpl_scaling {scaling:.2f}" if args.source == "smpl" else ""))
-    skip_why = "NaN" if args.source == "smpl" else "NaN/голова"
+    print(f"последовательность: {seq}")
+    print(f"источник: {source}"
+          + (f", smpl_scaling {scaling:.2f}" if source == "smpl" else ""))
+    skip_why = "NaN" if source == "smpl" else "NaN/голова"
     print(f"кадров всего: {total}, пропущено ({skip_why}): {n_nan}, выведено: {len(frames)}")
     if floor_flag:
         print(f"пол: p2 лодыжек {floor_p2:.1f} см -> floor_y {floor_y:.1f} см{floor_flag}")
@@ -367,6 +451,105 @@ def main():
     print(f"heading первого кадра: {frames[0]['root']['heading']:+.3f} рад "
           f"(лицо по +z: ожидалось около 0)")
     print(f"выход: {out_path}")
+    return summary
+
+
+def run_batch(args, repo):
+    """Режим --batch: список последовательностей -> JSON-файлы + batch-summary.tsv.
+
+    Формат списка: первый токен строки -- имя с cAll, пустые строки и строки с #
+    пропускаются. Неудачная запись не останавливает остальные; в stdout строка на
+    запись и итог. Возвращает код возврата: 0 -- все записи выведены, 1 -- хоть
+    одна не удалась (список в stdout).
+    """
+    batch_path = args.batch if os.path.isabs(args.batch) else os.path.join(repo, args.batch)
+    if not os.path.isfile(batch_path):
+        sys.exit(f"нет файла списка: {batch_path}")
+    seqs = []
+    with open(batch_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            seqs.append(line.split()[0])
+    if not seqs:
+        print(f"в {batch_path} нет ни одной записи")
+        return 1
+
+    out_dir = args.out if os.path.isabs(args.out) else os.path.join(repo, args.out)
+    os.makedirs(out_dir, exist_ok=True)
+    columns = ("seq", "source", "frames", "skipped", "durationSec", "legLenCm",
+               "floorFlag", "minRootHeight", "maxDHeadingDeg", "headingJumpFrames",
+               "maxDBoneDeg", "boneJumpFrames")
+    rows = []
+    failed = []
+    for seq in seqs:
+        try:
+            r = export_one(seq, args.source, args, repo, verbose=False)
+        except Exception as e:  # одна неудачная запись не останавливает остальные
+            failed.append(seq)
+            print(f"НЕ УДАЛАСЬ {seq}: {e}")
+            continue
+        rows.append(r)
+        print(f"{seq}: источник {r['source']}, кадров {r['frames']}, "
+              f"пропущено {r['skipped']}, {r['durationSec']:.2f} с, "
+              f"floorFlag {r['floorFlag']}, "
+              f"maxDHeadingDeg {r['maxDHeadingDeg']:.2f}, "
+              f"headingJumpFrames {r['headingJumpFrames']}, "
+              f"maxDBoneDeg {r['maxDBoneDeg']:.2f}, "
+              f"boneJumpFrames {r['boneJumpFrames']}")
+
+    tsv_path = os.path.join(out_dir, "batch-summary.tsv")
+    with open(tsv_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write("\t".join(columns) + "\n")
+        for r in rows:
+            f.write("\t".join([
+                r["seq"], r["source"], str(r["frames"]), str(r["skipped"]),
+                f"{r['durationSec']:.2f}", f"{r['legLenCm']:.1f}", str(r["floorFlag"]),
+                f"{r['minRootHeight']:.4f}", f"{r['maxDHeadingDeg']:.2f}",
+                str(r["headingJumpFrames"]), f"{r['maxDBoneDeg']:.2f}",
+                str(r["boneJumpFrames"]),
+            ]) + "\n")
+    print(f"сводка: {tsv_path}")
+    print(f"итог: записей {len(seqs)}, выведено {len(rows)}, не удалось {len(failed)}"
+          + (": " + ", ".join(failed) if failed else ""))
+    return 1 if failed else 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="AIST++ SMPL FK / keypoints3d_optim -> canonical.json (+ .cams.json)")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--seq", help="имя последовательности с cAll (одиночный режим)")
+    group.add_argument("--batch", help="файл со списком последовательностей: первый токен строки -- "
+                        "имя с cAll, пустые строки и строки с # пропускаются")
+    ap.add_argument("--source", choices=("smpl", "coco", "auto"), default=None,
+                    help="источник эталона: smpl = FK по smpl_poses (canonical-pose S12, "
+                         "основной путь), coco = keypoints3d_optim (прежний путь пробы), "
+                         "auto = smpl, если есть motions/<seq>.pkl, иначе coco "
+                         "(умолчание: smpl для --seq, auto для --batch)")
+    ap.add_argument("--src", default="data/aist/extracted/keypoints3d",
+                    help="каталог keypoints3d (для --source coco)")
+    ap.add_argument("--src-smpl", default="data/aist/extracted/motions",
+                    help="каталог motions pkl (для --source smpl)")
+    ap.add_argument("--smpl-model", default=DEFAULT_SMPL_MODEL,
+                    help="файл модели SMPL (нулевая форма)")
+    ap.add_argument("--src2d", default="data/aist/extracted/keypoints2d",
+                    help="каталог keypoints2d для <seq>.cams.json (следящий кадр, S21/T12)")
+    ap.add_argument("--out", default="data/derived/trial")
+    args = ap.parse_args()
+    # умолчание источника зависит от режима: smpl для одиночного, auto для пакетного
+    if args.source is None:
+        args.source = "auto" if args.batch else "smpl"
+
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    if args.batch:
+        sys.exit(run_batch(args, repo))
+
+    try:
+        export_one(args.seq, args.source, args, repo, verbose=True)
+    except ExportError as e:
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":
