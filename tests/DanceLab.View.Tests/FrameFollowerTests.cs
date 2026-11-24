@@ -344,5 +344,174 @@ namespace DanceLab.View.Tests
             Assert.Equal(Math.Max(0.0, ((r.Zoom * 1.0 * 640.0) - 640.0) / 2.0), f.LastTarget.MaxPanX, 12);
             Assert.Equal(Math.Max(0.0, ((r.Zoom * 1.0 * 360.0) - 360.0) / 2.0), f.LastTarget.MaxPanY, 12);
         }
+
+        [Fact]
+        public void CenterTracksCurrentFrameNotUnion()
+        {
+            // (S42) bbox стоит на месте в кадрах 0.0 с и 0.4 с (u 250..390), в кадре 1.0 с
+            // сдвинут вправо (u 450..590): цель центра панорамы — по рамке ТЕКУЩЕГО кадра
+            // (запрос с окном 0 с), не по объединённой рамке окна ±0.7 с. Окно и видео
+            // 1920x1080 (s = 1): при 640x360 танцор у правого края источника, панорамного
+            // запаса окна не хватает, чтобы его центрировать. Мерой будет центр ТЕКУЩЕЙ
+            // рамки (u = 520), спроецированный тем же отображением окна (масштаб z от
+            // центра, затем панорама); возвращаемый ScreenBox — объединённая рамка.
+            var f = new FrameFollower(SingleCam(
+                new[] { 0.0, 250.0, 140.0, 390.0, 200.0 },
+                new[] { 0.4, 250.0, 140.0, 390.0, 200.0 },
+                new[] { 1.0, 450.0, 140.0, 590.0, 200.0 }));
+
+            (double Zoom, double PanX, double PanY, ScreenBox Box) r = default;
+            for (var i = 0; i < 60; i++)
+            {
+                r = f.Update(1.0, "c01", 1920, 1080, 1920, 1080, 1.0);
+            }
+
+            var curCenterOnScreen = 1920.0 / 2 + (520.0 - 1920.0 / 2) * r.Zoom + r.PanX;
+            Assert.True(Math.Abs(curCenterOnScreen - 960.0) <= 6.0,
+                    $"центр текущей рамки на экране {curCenterOnScreen:0.###} против центра окна 960");
+        }
+
+        [Fact]
+        public void LagOnZoom3AtMostTwiceLagOnZoom1()
+        {
+            // (S42) равномерное движение вправо 6 пикселей за кадр (кадры каждые 1/60 с,
+            // bbox 140 пикселей шириной): 90 тиков с шагом 1/30 с до одного момента t = 3.0
+            // при слайдере 1 и при слайдере 3. Лаг = |центр рамки ScreenBox − центр окна| /
+            // ширина окна; отношение (лаг при 3) / (лаг при 1) <= 2 — большой зум не должен
+            // ухудшать ведение вдвое и больше. Окно и видео 1920x1080 (s = 1): прогон движения
+            // 6 px/кадр за 3 с — 1080 пикселей, в источник 640 не помещается (танцор вылетает
+            // за контент, панорама упирается в кламп и лаг перестаёт зависеть от gain);
+            // вертикальный размах bbox подобран так, чтобы авто-зум был внутри клампов (~2.3),
+            // а не прижат к 1 или 3.
+            var frames = new double[240][];
+            for (var i = 0; i < 240; i++)
+            {
+                frames[i] = new[] { i / 60.0, 150.0 + 6 * i, 150.0, 290.0 + 6 * i, 450.0 };
+            }
+
+            var lag1 = Lag(1.0, frames);
+            var lag3 = Lag(3.0, frames);
+            Assert.True(lag3 <= 2.0 * lag1,
+                    $"лаг при слайдере 3 ({lag3:0.###} px) должен быть не больше двух лагов при слайдере 1 ({lag1:0.###} px)");
+        }
+
+        /// <summary>Лаг ведения: 90 тиков с шагом 1/30 с по треку, |центр ScreenBox − центр окна|, пиксели окна.</summary>
+        private static double Lag(double slider, double[][] frames)
+        {
+            var f = new FrameFollower(SingleCam(frames));
+            (double Zoom, double PanX, double PanY, ScreenBox Box) r = default;
+            for (var j = 1; j <= 90; j++)
+            {
+                r = f.Update(j / 30.0, "c01", 1920, 1080, 1920, 1080, slider);
+            }
+
+            return Math.Abs(r.Box.CenterX - 1920.0 / 2);
+        }
+
+        /// <summary>
+        /// Трек 200 кадров (T44/E56): времена как в cams.json — Math.Round(i/60.0, 4);
+        /// bbox 250..390 x 140..200, с кадра 100 (t = 1.6667) сдвинут вправо на 200 px
+        /// (450..590); root = центр bbox.
+        /// </summary>
+        private static CamTrack RoundedTimesTrack()
+        {
+            var rows = new double[200][];
+            for (var i = 0; i < 200; i++)
+            {
+                var shift = i >= 100 ? 200.0 : 0.0;
+                rows[i] = new[]
+                {
+                    Math.Round(i / 60.0, 4),
+                    320.0 + shift, 170.0,
+                    250.0 + shift, 140.0, 390.0 + shift, 200.0,
+                };
+            }
+
+            return new CamTrack(rows);
+        }
+
+        [Fact]
+        public void NearestFrameFoundWithRoundedTimes()
+        {
+            // (T44/E56) времена кадров округлены до 4 знаков (1.6667), тики таймера дают
+            // числа вида 1.666666…: TryGetBox с окном 0 промахивается, TryGetNearest
+            // находит ближайший кадр. С кадра 100 bbox сдвинут вправо на 200 px — по
+            // рамке видно, какой кадр нашёлся.
+            var track = RoundedTimesTrack();
+
+            // воспроизводим проблему: точного кадра 1.6733 нет
+            Assert.False(track.TryGetBox(1.6733, 0.0, out _));
+
+            // t = 1.6733 = 1.6667 + 0.0066: ближайший — кадр 100, bbox уже сдвинут
+            Assert.True(track.TryGetNearest(1.6733, out var tFrame, out var box));
+            Assert.Equal(1.6667, tFrame, 12);
+            Assert.Equal(450.0, box.UMin, 12);
+            Assert.Equal(140.0, box.VMin, 12);
+            Assert.Equal(590.0, box.UMax, 12);
+            Assert.Equal(200.0, box.VMax, 12);
+
+            // t = 1.6597 = 1.6667 − 0.007: сосед 1.65 дальше (0.0097 > 0.007) — снова кадр 100
+            Assert.True(track.TryGetNearest(1.6597, out tFrame, out box));
+            Assert.Equal(1.6667, tFrame, 12);
+
+            // t = 1.68: |1.68−1.6833| = 0.0033 < |1.68−1.6667| = 0.0133 — ближайший кадр 101
+            Assert.True(track.TryGetNearest(1.68, out tFrame, out box));
+            Assert.Equal(1.6833, tFrame, 12);
+
+            // t = 1.72 между кадрами 1.7167 и 1.7333: ближе 1.7167 (0.0033 против 0.0133)
+            Assert.True(track.TryGetNearest(1.72, out tFrame, out box));
+            Assert.Equal(1.7167, tFrame, 12);
+
+            // за пределами трека дальше maxGapSec: последний кадр 3.3167, 5.0 дальше 0.05
+            Assert.False(track.TryGetNearest(5.0, out _, out _));
+
+            // пустой трек — false
+            Assert.False(new CamTrack(Array.Empty<double[]>()).TryGetNearest(1.0, out _, out _));
+        }
+
+        [Fact]
+        public void CenterTracksCurrentFrameOnRealisticTicks()
+        {
+            // (T44/E56) реалистичные тики по треку с округлёнными временами: 90 тиков
+            // tt = max(0, 2.0 − 3 + k/30) (первые 30 зажаты в нуле, последний тик t = 2.0),
+            // слайдер 3 — большой зум, где S42 важнее всего (при слайдере 1 шаг сглаживания
+            // 0.2/тик за 11 тиков после скачка оставил бы ~17 px источника — порог 6 px
+            // недостижим). С кадра 100 (t = 1.6667) танцор сдвинут вправо на 200 px; центр
+            // ТЕКУЩЕГО кадра (ближайшего к 2.0, u = 520), спроецированный тем же отображением
+            // окна (масштаб z от центра, затем панорама), остаётся у центра окна (допуск 6 px);
+            // при откате к объединённой рамке (центр u = 420) он ушёл бы на (520−420)·z ≈ 900 px.
+            var f = new FrameFollower(new Dictionary<string, CamTrack> { ["c01"] = RoundedTimesTrack() });
+
+            (double Zoom, double PanX, double PanY, ScreenBox Box) r = default;
+            for (var k = 1; k <= 90; k++)
+            {
+                r = f.Update(Math.Max(0, 2.0 - 3 + k / 30.0), "c01", 1920, 1080, 1920, 1080, 3.0);
+            }
+
+            var curCenterOnScreen = 1920.0 / 2 + (520.0 - 1920.0 / 2) * r.Zoom + r.PanX;
+            Assert.True(Math.Abs(curCenterOnScreen - 960.0) <= 6.0,
+                    $"центр текущего кадра на экране {curCenterOnScreen:0.###} против центра окна 960");
+        }
+
+        [Fact]
+        public void NearestRootMatchesFrame()
+        {
+            // (T44/E56) TryGetRootNearest для t = 1.6733 возвращает root кадра 1.6667
+            // (root = центр bbox, сдвинутого с кадра 100: (320+200, 170) = (520, 170))
+            var track = RoundedTimesTrack();
+
+            Assert.True(track.TryGetRootNearest(1.6733, out var root));
+            Assert.Equal(520.0, root.U, 12);
+            Assert.Equal(170.0, root.V, 12);
+
+            // вне трека дальше 0.05 — false
+            Assert.False(track.TryGetRootNearest(5.0, out _));
+
+            // TryGetRoot (точное совпадение, отчёт тура) не тронут: 1.6733 промах,
+            // 2.0 = 120/60 находит кадр 120 как раньше
+            Assert.False(track.TryGetRoot(1.6733, out _));
+            Assert.True(track.TryGetRoot(2.0, out var exact));
+            Assert.Equal(520.0, exact.U, 12);
+        }
     }
 }

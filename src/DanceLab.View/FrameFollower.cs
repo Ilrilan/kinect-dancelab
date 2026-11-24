@@ -67,6 +67,123 @@ namespace DanceLab.View
             box = (uMin, vMin, uMax, vMax);
             return true;
         }
+
+        /// <summary>
+        /// Root (u,v) танцора кадра с временем ровно t (отчёт тура, S34): тот же двоичный поиск,
+        /// что в TryGetBox с окном 0; false, если кадра с таким t нет.
+        /// </summary>
+        public bool TryGetRoot(double t, out (double U, double V) root)
+        {
+            root = default;
+            if (rows.Length == 0)
+            {
+                return false;
+            }
+
+            var lo = 0;
+            var hi = rows.Length;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) / 2;
+                if (rows[mid][0] < t)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo >= rows.Length || rows[lo][0] != t)
+            {
+                return false;
+            }
+
+            root = (rows[lo][1], rows[lo][2]);
+            return true;
+        }
+
+        /// <summary>
+        /// Кадр, ближайший к t по |t′ − t| (T44/S42): округление времён в файле до четырёх
+        /// знаков (31.9667) и тики по таймеру (числа вида 31.966666…) делают точное
+        /// совпадение редким — TryGetBox с окном 0 промахивается. Двоичный поиск позиции
+        /// вставки, сравнение двух соседних кадров; при равных расстояниях берётся более
+        /// ранний. false, если трек пуст или ближайший кадр дальше maxGapSec.
+        /// </summary>
+        public bool TryGetNearest(
+                double t, out double tFrame,
+                out (double UMin, double VMin, double UMax, double VMax) box,
+                double maxGapSec = 0.05)
+        {
+            tFrame = default;
+            box = default;
+            var index = IndexOfNearest(t);
+            if (index < 0 || Math.Abs(rows[index][0] - t) > maxGapSec)
+            {
+                return false;
+            }
+
+            tFrame = rows[index][0];
+            box = (rows[index][3], rows[index][4], rows[index][5], rows[index][6]);
+            return true;
+        }
+
+        /// <summary>
+        /// Root (u,v) танцора кадра, ближайшего к t (T44/S42): тот же поиск ближайшего кадра,
+        /// что в <see cref="TryGetNearest"/>; false, если трек пуст или ближайший кадр дальше
+        /// maxGapSec. Точное совпадение времени (<see cref="TryGetRoot"/>) остаётся для
+        /// отчёта тура (S34).
+        /// </summary>
+        public bool TryGetRootNearest(double t, out (double U, double V) root, double maxGapSec = 0.05)
+        {
+            root = default;
+            var index = IndexOfNearest(t);
+            if (index < 0 || Math.Abs(rows[index][0] - t) > maxGapSec)
+            {
+                return false;
+            }
+
+            root = (rows[index][1], rows[index][2]);
+            return true;
+        }
+
+        /// <summary>Индекс кадра, ближайшего к t по |t′ − t|; −1 для пустого трека.</summary>
+        private int IndexOfNearest(double t)
+        {
+            if (rows.Length == 0)
+            {
+                return -1;
+            }
+
+            var lo = 0;
+            var hi = rows.Length;
+            while (lo < hi)
+            {
+                var mid = (lo + hi) / 2;
+                if (rows[mid][0] < t)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            // lo — первый кадр с t′ >= t: ближайший из него и предыдущего
+            if (lo >= rows.Length)
+            {
+                return rows.Length - 1;
+            }
+
+            if (lo == 0)
+            {
+                return 0;
+            }
+
+            return t - rows[lo - 1][0] <= rows[lo][0] - t ? lo - 1 : lo;
+        }
     }
 
     /// <summary>
@@ -107,6 +224,10 @@ namespace DanceLab.View
     /// состояние сглаживания внутри; формулы перенесены дословно из tools/player_trial/MainWindow.cs.
     /// Числовой отчёт тура (S34, T34): каждый Update заполняет LastTarget — цель авто-зума
     /// тика до сглаживания и пределы панорамы тика (<see cref="FrameTarget"/>), для отчёта тура.
+    /// S42: цель центра панорамы — по рамке кадра, ближайшего к t (округлённые времена
+    /// cams.json с тиками таймера точного совпадения не дают), не по объединённой рамке
+    /// окна ±0.7 с; шаг сглаживания центра и панорамы растёт с множителем
+    /// слайдера (0.2 при 1, до 0.5 при 3), чтобы на большом зуме окно успевало за танцором.
     /// </summary>
     public sealed class FrameFollower
     {
@@ -163,7 +284,7 @@ namespace DanceLab.View
             var winW = windowW; // панель ширины контента (медиа заполняет окно по ширине)
 
             // авто-кадр: расширенный bbox, цель зума по габариту танцора с запасом pad = 25%
-            var hasBox = TryGetAutoFrame(t, camera, out var box);
+            var hasBox = TryGetAutoFrame(t, camera, BboxWindowSec, out var box);
             double zAutoTarget;
             double cUTarget;
             double cVTarget;
@@ -177,6 +298,18 @@ namespace DanceLab.View
                 cUTarget = (box.UMin + box.UMax) / 2.0;
                 // центр паддингованного бокса: [vMin-0.4p, vMax+0.6p] -> центр = центр bbox + 0.1*p
                 cVTarget = (vMin + vMax) / 2.0 + (0.10 * 0.25 * (vMax - vMin));
+
+                // S42/T44: цель центра — по рамке кадра, ближайшего к t: времена в cams.json
+                // округлены до 4 знаков, тики таймера точного совпадения с ними не дают;
+                // ближайшего кадра нет (пустой трек / дальше maxGapSec) — остаётся центр
+                // объединённой рамки
+                if (TryGetNearestFrame(t, camera, out var curBox))
+                {
+                    var curVMin = curBox.VMin;
+                    var curVMax = curBox.VMax + ShoePadRows;
+                    cUTarget = (curBox.UMin + curBox.UMax) / 2.0;
+                    cVTarget = (curVMin + curVMax) / 2.0 + (0.10 * 0.25 * (curVMax - curVMin));
+                }
             }
             else
             {
@@ -185,6 +318,9 @@ namespace DanceLab.View
                 cVTarget = hSrc / 2.0;
             }
 
+            // S42: шаг сглаживания центра и панорамы растёт с множителем слайдера (0.2 при 1,
+            // до 0.5 при 3): на большом зуме окно должно догонять танцора быстрее
+            var gain = Math.Min(0.5, 0.2 * Math.Max(1.0, Math.Min(3.0, sliderZoom)));
             if (double.IsNaN(smoothedCenterU))
             {
                 smoothedCenterU = cUTarget; // первый валидный тик: без проползания из нуля
@@ -192,8 +328,8 @@ namespace DanceLab.View
             }
             else
             {
-                smoothedCenterU += 0.2 * (cUTarget - smoothedCenterU);
-                smoothedCenterV += 0.2 * (cVTarget - smoothedCenterV);
+                smoothedCenterU += gain * (cUTarget - smoothedCenterU);
+                smoothedCenterV += gain * (cVTarget - smoothedCenterV);
             }
 
             smoothedZoomAuto += 0.2 * (zAutoTarget - smoothedZoomAuto);
@@ -206,8 +342,8 @@ namespace DanceLab.View
             var targetX = Math.Max(-maxPanX, Math.Min(maxPanX, -z * s * (smoothedCenterU - (wSrc / 2.0))));
             var targetY = Math.Max(-maxPanY, Math.Min(maxPanY, -z * s * (vTarget - (hSrc / 2.0))));
 
-            smoothedPanX += 0.2 * (targetX - smoothedPanX);
-            smoothedPanY += 0.2 * (targetY - smoothedPanY);
+            smoothedPanX += gain * (targetX - smoothedPanX);
+            smoothedPanY += gain * (targetY - smoothedPanY);
 
             // рамка танцора в пикселях окна: то же отображение, которое окно применяет к видео
             // (масштаб z от центра элемента, затем сдвиг на панораму; контент центрирован)
@@ -236,12 +372,24 @@ namespace DanceLab.View
             return (z, smoothedPanX, smoothedPanY, screenBox);
         }
 
-        /// <summary>Расширенный по времени bbox танцора текущей камеры; false, если камеры/данных нет.</summary>
-        private bool TryGetAutoFrame(double t, string? camera, out (double UMin, double VMin, double UMax, double VMax) box)
+        /// <summary>Расширенный по времени bbox танцора текущей камеры (окно windowSec вокруг t); false, если камеры/данных нет.</summary>
+        private bool TryGetAutoFrame(double t, string? camera, double windowSec, out (double UMin, double VMin, double UMax, double VMax) box)
         {
             box = default;
             return cameras.TryGetValue(camera ?? string.Empty, out var track)
-                    && track.TryGetBox(t, BboxWindowSec, out box);
+                    && track.TryGetBox(t, windowSec, out box);
+        }
+
+        /// <summary>
+        /// Рамка кадра, ближайшего к t, текущей камеры (S42/T44): точного совпадения времён
+        /// почти не бывает — времена в cams.json округлены до 4 знаков, тики идут по таймеру
+        /// (<see cref="CamTrack.TryGetNearest"/>); false, если камеры/данных нет.
+        /// </summary>
+        private bool TryGetNearestFrame(double t, string? camera, out (double UMin, double VMin, double UMax, double VMax) box)
+        {
+            box = default;
+            return cameras.TryGetValue(camera ?? string.Empty, out var track)
+                    && track.TryGetNearest(t, out _, out box);
         }
     }
 }
