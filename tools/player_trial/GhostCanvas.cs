@@ -310,6 +310,105 @@ namespace PlayerTrial
             InvalidateVisual();
         }
 
+        /// <summary>Сброс кадра сцены для нового прогона сглаживания: тур (S34) пересоздаёт следящий кадр и прокручивает сглаживание заново.</summary>
+        public void ResetFrame()
+        {
+            framed = false;
+            sceneFollower.Reset();
+        }
+
+        /// <summary>
+        /// Габарит эталон-призрака в пикселях панели сцены по той же проекции, что OnRender (S34, tour.tsv ghost*):
+        /// голова с куполом бейсболки (радиус 1.06) и козырьком, концы капсул, расширенные на радиус капсулы.
+        /// Эталона нет — Rect.Empty.
+        /// </summary>
+        public Rect ReferenceBounds()
+        {
+            if (reference == null)
+            {
+                return Rect.Empty;
+            }
+
+            var rf = reference;
+            UpdateCameraTarget();
+
+            // масштаб и центр — те же формулы кадра сцены, что в OnRender (S26), с той же защитой масштаба
+            var scale = sceneFrame.ScalePxPerM;
+            if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            {
+                scale = ActualHeight / 3.2;
+            }
+
+            var cx = sceneFrame.CenterScreenX;
+            var cy = sceneFrame.FloorScreenY - (SceneCenterYm * scale);
+
+            var l = lengths;
+            var j = Solve(rf, l, -groundShiftU);
+            Point P(GhostVec p) => Project(p.X, p.Y, p.Z, cx, cy, scale);
+            double F(GhostVec p) => DepthFactor(p.X, p.Z);
+
+            var minX = double.PositiveInfinity;
+            var minY = double.PositiveInfinity;
+            var maxX = double.NegativeInfinity;
+            var maxY = double.NegativeInfinity;
+            void Take(Point p)
+            {
+                minX = Math.Min(minX, p.X);
+                maxX = Math.Max(maxX, p.X);
+                minY = Math.Min(minY, p.Y);
+                maxY = Math.Max(maxY, p.Y);
+            }
+
+            // голова: центр, расширенный на купольные радиусы (купол 1.06 накрывает эллипс головы 1.0)
+            var fHead = F(j.HeadC);
+            var headP = P(j.HeadC);
+            var rx = l.HeadR * scale * fHead * 1.06;
+            var ry = l.HeadR * 1.15 * scale * fHead * 1.06;
+            Take(new Point(headP.X - rx, headP.Y - ry));
+            Take(new Point(headP.X + rx, headP.Y + ry));
+
+            // козырёк бейсболки: та же геометрия, что в DrawGhost (S20, S27)
+            var tilt = 22 * Math.PI / 180;
+            var fv = (j.FwdH * Math.Cos(tilt)) - (new GhostVec(0, 1, 0) * Math.Sin(tilt));
+            var brimBaseL = j.HeadC - (j.LeftH * (0.85 * l.HeadR)) + (new GhostVec(0, 1, 0) * (0.2 * l.HeadR));
+            var brimBaseR = j.HeadC + (j.LeftH * (0.85 * l.HeadR)) + (new GhostVec(0, 1, 0) * (0.2 * l.HeadR));
+            var brimTipL = brimBaseL + (fv * (CapBrimForwardFrac * l.HeadR)) + (j.LeftH * (0.55 * l.HeadR));
+            var brimTipR = brimBaseR + (fv * (CapBrimForwardFrac * l.HeadR)) - (j.LeftH * (0.55 * l.HeadR));
+            Take(P(brimBaseL));
+            Take(P(brimBaseR));
+            Take(P(brimTipL));
+            Take(P(brimTipR));
+
+            // кость: оба конца валидной кости, расширенные на радиус капсулы в пикселях (те же радиусы, что Capsule)
+            void Bone(int index, GhostVec a, GhostVec b, double radiusM)
+            {
+                if (!rf.BoneValid[index])
+                {
+                    return;
+                }
+
+                var pa = P(a);
+                var ra = radiusM * scale * F(a);
+                Take(new Point(pa.X - ra, pa.Y - ra));
+                Take(new Point(pa.X + ra, pa.Y + ra));
+                var pb = P(b);
+                var rb = radiusM * scale * F(b);
+                Take(new Point(pb.X - rb, pb.Y - rb));
+                Take(new Point(pb.X + rb, pb.Y + rb));
+            }
+
+            Bone(0, j.ShL, j.ElbowL, 0.17 * l.UpperArm);
+            Bone(1, j.ShR, j.ElbowR, 0.17 * l.UpperArm);
+            Bone(2, j.ElbowL, j.WristL, 0.14 * l.LowerArm);
+            Bone(3, j.ElbowR, j.WristR, 0.14 * l.LowerArm);
+            Bone(4, j.HipL, j.KneeL, 0.17 * l.Thigh);
+            Bone(5, j.HipR, j.KneeR, 0.17 * l.Thigh);
+            Bone(6, j.KneeL, j.AnkleL, 0.12 * l.Shin);
+            Bone(7, j.KneeR, j.AnkleR, 0.12 * l.Shin);
+
+            return new Rect(minX, minY, maxX - minX, maxY - minY);
+        }
+
         /// <summary>
         /// Насколько стопы прямой кинематики эталона висят над полом (S32), доли длины ноги: для каждого кадра трека
         /// берётся низ нижней стопы (лодыжка минус радиус капсулы голени 0.12 * Shin) при единичной длине ноги,
@@ -361,8 +460,7 @@ namespace PlayerTrial
             }
 
             // цель камеры (S26): следование за корнем эталона из SceneFollower
-            targetXm = sceneFrame.TargetXm;
-            targetZm = sceneFrame.TargetZm;
+            UpdateCameraTarget();
 
             dc.DrawRectangle(Background, null, new Rect(0, 0, w, h));
             if (w < 50 || h < 50)
@@ -391,6 +489,13 @@ namespace PlayerTrial
             {
                 DrawGhost(dc, user, UserBaseColor, UserSkin, userDeviation, 0.85, cx, cy, scale, 0.0);
             }
+        }
+
+        /// <summary>Цель камеры сцены из последнего кадра SceneFollower (S26) — общая для OnRender и ReferenceBounds.</summary>
+        private void UpdateCameraTarget()
+        {
+            targetXm = sceneFrame.TargetXm;
+            targetZm = sceneFrame.TargetZm;
         }
 
         /// <summary>
@@ -497,28 +602,44 @@ namespace PlayerTrial
                 ElbowL, ElbowR, WristL, WristR, KneeL, KneeR, AnkleL, AnkleR, HeadC;
         }
 
-        /// <summary>Прямая кинематика позы: rootShiftU — поправка высоты корня в долях длины ноги (0 у пользователя).</summary>
+        /// <summary>
+        /// Прямая кинематика позы: оси торса берутся из CanonicalFrame.TorsoFrame() (формат версии 2, S39),
+        /// кости восстанавливаются в системе таза leftT·x + up·y + fwdPelvis·z, в которой они записаны;
+        /// бёдра откладываются по оси таза leftT, плечи по линии плеч side. rootShiftU — поправка высоты
+        /// корня в долях длины ноги (0 у пользователя).
+        /// </summary>
         private static GhostJoints Solve(CanonicalFrame f, GhostLengths len, double rootShiftU)
         {
             var leg = Math.Max(len.LegLength, 0.1);
 
-            // мировой фрейм: heading — азимут взгляда, lean — наклон вверх-торса вперёд, turn — скрутка вокруг вертикали
+            // мировой фрейм: heading — азимут взгляда; горизонтальные оси — для бейсболки и стрелки (E7)
             var fwdH = new GhostVec(Math.Sin(f.HeadingRad), 0, Math.Cos(f.HeadingRad));
             var leftH = new GhostVec(fwdH.Z, 0, -fwdH.X);
-            var up = (new GhostVec(0, 1, 0) * Math.Cos(f.TorsoLeanRad) + fwdH * Math.Sin(f.TorsoLeanRad)).Normalized();
-            var side = (leftH * Math.Cos(f.TorsoTurnRad) + fwdH * Math.Sin(f.TorsoTurnRad)).Orthogonalized(up);
+
+            // оси торса из CanonicalFrame.TorsoFrame() (S39): leftT — тазовая ось (линия бёдер),
+            // fwdPelvis — передняя ось системы таза, в которой записаны кости
+            var tf = f.TorsoFrame();
+            var up = new GhostVec(tf.Up.X, tf.Up.Y, tf.Up.Z);
+            var leftT = new GhostVec(tf.Left.X, tf.Left.Y, tf.Left.Z);
+            var fwdPelvis = new GhostVec(tf.Forward.X, tf.Forward.Y, tf.Forward.Z);
+
+            // линия плеч: скрутка turn вокруг оси вверх торса от тазовой оси; fwdT — передняя ось груди,
+            // остаётся для разметки переда/зада капсул, панелей торса и бейсболки
+            var turn = f.TorsoTurnRad;
+            var sideRaw = (leftT * Math.Cos(turn)) + (fwdPelvis * Math.Sin(turn));
+            var side = sideRaw.Orthogonalized(up);
             var fwdT = GhostVec.Cross(side, up);
 
             GhostVec Bone(int i)
             {
                 var v = new GhostVec(f.Bones[i * 3], f.Bones[(i * 3) + 1], f.Bones[(i * 3) + 2]);
-                return (v.X * side) + (v.Y * up) + (v.Z * fwdT);
+                return (v.X * leftT) + (v.Y * up) + (v.Z * fwdPelvis);
             }
 
             var root = RootOf(f, len) + (new GhostVec(0, (f.RootHeight + rootShiftU) * leg, 0));
 
-            var hipL = root + (side * len.HalfHip);
-            var hipR = root - (side * len.HalfHip);
+            var hipL = root + (leftT * len.HalfHip);
+            var hipR = root - (leftT * len.HalfHip);
             var neck = root + (up * len.TorsoLen);
             var shL = neck + (side * len.HalfShoulder);
             var shR = neck - (side * len.HalfShoulder);

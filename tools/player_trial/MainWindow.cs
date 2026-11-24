@@ -32,6 +32,20 @@ namespace PlayerTrial
     /// </summary>
     internal sealed class MainWindow : Window
     {
+        /// <summary>Код возврата процесса тура (S34): 0 — PASS, 1 — FAIL; читает Program.Main.</summary>
+        public static int TourExitCode { get; private set; }
+
+        /// <summary>Столбцы tour.tsv (S34) ровно в порядке контракта.</summary>
+        private static readonly string[] TourTsvColumns =
+        {
+            "seq", "source", "cam", "t", "zoom", "z", "zAutoTarget", "panX", "panY",
+            "panAtLimitX", "panAtLimitY", "winW", "winH", "videoW", "videoH",
+            "boxLeft", "boxTop", "boxRight", "boxBottom", "feetY", "boxCenterDx",
+            "curLeft", "curTop", "curRight", "curBottom",
+            "ghostLeft", "ghostTop", "ghostRight", "ghostBottom", "feetDy",
+            "sceneOpaquePx",
+        };
+
         private static readonly Brush Panel = new SolidColorBrush(Color.FromRgb(0x1b, 0x1c, 0x22));
         private static readonly Brush Text = new SolidColorBrush(Color.FromRgb(0xe6, 0xe6, 0xea));
         private static readonly Brush RingIdle = new SolidColorBrush(Color.FromRgb(0x2a, 0x2c, 0x34));
@@ -171,6 +185,9 @@ namespace PlayerTrial
         /// <summary>Панель видео: видимое окно следящего кадра (высота окна для клампа и центра панорамы).</summary>
         private readonly Grid videoPanel = new Grid { Background = new SolidColorBrush(Color.FromRgb(0x0a, 0x0b, 0x0e)), Margin = new Thickness(10, 0, 5, 10), ClipToBounds = true };
         private readonly GhostCanvas ghost = new GhostCanvas();
+
+        /// <summary>Панель сцены: призрак + HUD + оверлеи; её снимает тур (S34) вместе с HUD.</summary>
+        private readonly Grid ghostPanel = new Grid { Margin = new Thickness(5, 0, 10, 10) };
         private readonly Grid views = new Grid();
         private readonly Grid sceneView = new Grid { Visibility = Visibility.Collapsed };
 
@@ -197,12 +214,20 @@ namespace PlayerTrial
         // <seq>.cams.json (камера → CamTrack: root/bbox по t) вынесены в DanceLab.View.FrameFollower;
         // окно на тике кормит его числами окна/видео/слайдера и применяет итог к трансформам
         private FrameFollower follower = new FrameFollower(new Dictionary<string, CamTrack>());
+
+        /// <summary>Данные cams.json записи (камера → CamTrack), как у follower; тур (S34) берёт рамки cur* отсюда.</summary>
+        private Dictionary<string, CamTrack> camTracks = new Dictionary<string, CamTrack>();
         // пробные пороги оценки (DeadZone 0.35, Saturation 1.0, MinCoverageBones 4): один экземпляр
         // и для скорера, и для гейта подсветки/процента позы — значения не расходятся
         private readonly TrialParams trialParams = new TrialParams();
         private TrialScorer? scorer;
         private TrialScore? lastScore;
         private PlayerSession? session;
+
+        // разворот направления взгляда живой позы (S39): состояние через кадры; Reset при
+        // рестарте с нуля и при пропаже пользователя (новое появление — направление заново)
+        private readonly HeadingUnwrapper userHeading = new HeadingUnwrapper();
+
         private AppMode mode = AppMode.Probe;
         private bool busy;
         private bool wantRunning;
@@ -306,6 +331,11 @@ namespace PlayerTrial
                 accumulated = 0;
                 lastMark = 0;
             }
+        }
+
+        /// <summary>Окно другой записи тура --tour-set (T42): копия Options с заменённым Seq.</summary>
+        public MainWindow(Options opts, string seq) : this(opts.WithSeq(seq))
+        {
         }
 
         public MainWindow(Options options)
@@ -455,8 +485,8 @@ namespace PlayerTrial
             media.RenderTransform = videoTransform;
             videoPanel.Children.Add(media);
 
-            var ghostPanel = new Grid { Margin = new Thickness(5, 0, 10, 10) };
             ghostPanel.Children.Add(ghost);
+
             ghostPanel.Children.Add(hud);
             ghostPanel.Children.Add(countdownText);
 
@@ -751,8 +781,10 @@ namespace PlayerTrial
                 SetStatus("Эталон не загрузился (" + canonicalPath + "): " + ex.Message);
             }
 
-            // следящий кадр (S21, T12): пиксели корня танцора по камерам, рядом с canonical.json
-            follower = new FrameFollower(LoadCamRoot(Path.Combine(Path.GetDirectoryName(canonicalPath)!, opts.Seq + ".cams.json")));
+            // следящий кадр (S21, T12): пиксели корня танцора по камерам, рядом с canonical.json;
+            // словарь хранится отдельно — тур (S34) берёт из него рамки cur* и длительность
+            camTracks = LoadCamRoot(Path.Combine(Path.GetDirectoryName(canonicalPath)!, opts.Seq + ".cams.json"));
+            follower = new FrameFollower(camTracks);
 
             var videoPath = FindVideo(track?.Video);
             if (videoPath != null && opts.Camera != null)
@@ -802,6 +834,13 @@ namespace PlayerTrial
             if (opts.Regress == "media")
             {
                 await RunMediaRegression();
+            }
+
+            // тур ракурсов (S34): вместо --shot, окно закрывается в конце тура
+            if (opts.Tour != null)
+            {
+                await RunTourAsync();
+                return;
             }
 
             await ShotIfRequested();
@@ -902,12 +941,14 @@ namespace PlayerTrial
         }
 
         /// <summary>
-        /// Следящий кадр (S21, T12 → T22): авто-зум и панорама видео по bbox танцора из cams.json
-        /// текущей камеры. Математика (формулы zAuto/Tx/Ty, клампы, сглаживание 0.2, окно ±0.7 с,
-        /// fallback 1.6) — в DanceLab.View.FrameFollower; окно только проверяет готовность видео,
-        /// кормит числами и применяет итог к трансформам.
+        /// Один тик следящего кадра с результатом (S21, T12 → T22 → S34): авто-зум и панорама видео
+        /// по bbox танцора из cams.json текущей камеры. Математика (формулы zAuto/Tx/Ty, клампы,
+        /// сглаживание 0.2, окно ±0.7 с, fallback 1.6) — в DanceLab.View.FrameFollower; окно только
+        /// проверяет готовность видео, кормит числами и применяет итог к трансформам. Возвращает
+        /// итоговый зум, панораму и рамку танцора (тур S34 пишет их в tour.tsv); видео не готово —
+        /// зум слайдера, нули и невалидная рамка.
         /// </summary>
-        private void UpdateVideoFrame(double t)
+        private (double Zoom, double PanX, double PanY, ScreenBox Box) StepVideoFrame(double t)
         {
             var sliderZoom = Math.Max(1.0, Math.Min(3.0, Math.Round(zoomSlider.Value, 1)));
             var winH = videoPanel.ActualHeight;
@@ -918,7 +959,7 @@ namespace PlayerTrial
                 videoPan.X = 0;
                 videoPan.Y = 0;
                 ghost.SetVideoBox(false, 0, 0, 0, ghost.ActualWidth, ghost.ActualHeight, sliderZoom);
-                return;
+                return (sliderZoom, 0, 0, default(ScreenBox));
             }
 
             var frame = follower.Update(t, currentCamera,
@@ -938,7 +979,11 @@ namespace PlayerTrial
             var kx = vw > 0 ? gw / vw : 1.0;
             var ky = vh > 0 ? gh / vh : 1.0;
             ghost.SetVideoBox(frame.Box.IsValid, frame.Box.Height * ky, frame.Box.FeetY * ky, frame.Box.CenterX * kx, gw, gh, sliderZoom);
+            return frame;
         }
+
+        /// <summary>Обёртка тика (поведение не изменилось): шаг следящего кадра без использования результата.</summary>
+        private void UpdateVideoFrame(double t) => _ = StepVideoFrame(t);
 
         /// <summary>Живой пользователь: ближайший к сенсору (минимум |z| корня), калибровка, канонизация, скоринг,
         /// краска костей с гейтом покрытия, мгновенный процент позы для паузы (S22).</summary>
@@ -968,7 +1013,7 @@ namespace PlayerTrial
             CollectCalibration(lengths, frame.DeviceTimeUs);
             CollectFloorSample(pose, frame.DeviceTimeUs);
             var legM = calibrated && userLegM > 0 ? userLegM : track!.LegLengthM;
-            var userFrame = Canonicalizer.ToCanonical(pose, userBones, legM, floorYm);
+            var userFrame = Canonicalizer.ToCanonical(pose, userBones, legM, floorYm, userHeading);
 
             // скоринг по часам видео, раз на новый момент времени (пауза не копит историю)
             if (scorer != null && !paused && !(Math.Abs(t - lastScoredT) < 1e-9))
@@ -1000,12 +1045,14 @@ namespace PlayerTrial
             }
         }
 
-        /// <summary>Пользователя нет: без призрака и без процента позы в HUD паузы.</summary>
+        /// <summary>Пользователя нет: без призрака и без процента позы в HUD паузы; разворот
+        /// направления взгляда сбрасывается — при новом появлении направление начинается заново.</summary>
         private void ResetUserDisplay()
         {
             ghost.SetUser(null, null);
             livePose01 = 0;
             livePoseValid = false;
+            userHeading.Reset();
         }
 
         /// <summary>Гейт покрытия (T14/P0.4): валидных костей в сравнении не меньше MinCoverageBones.</summary>
@@ -1707,6 +1754,8 @@ namespace PlayerTrial
                 scorer = new TrialScorer(track, trialParams);
             }
 
+            userHeading.Reset(); // разворот взгляда живой позы (S39) начинается заново
+
             if (mediaOpened)
             {
                 // WPF MediaElement: после MediaEnded рестарт требует Stop перед сбросом позиции, иначе Play() не начинает заново
@@ -2076,6 +2125,527 @@ namespace PlayerTrial
             var full = Path.IsPathRooted(shot) ? shot : Path.Combine(RepoRoot(), shot);
             SavePng(full);
             Close();
+        }
+
+        /// <summary>
+        /// Тур ракурсов (S34, T35, часть 2): один запуск без сенсора обходит камеры записи с файлами,
+        /// на каждый момент и множитель «Кадр» ставит видео на паузу, прокручивает сглаживание кадра
+        /// с шагом тика за 3 с до момента, снимает панели видео и сцены в лист «девять ракурсов»
+        /// sheet-z&lt;Z&gt;-t&lt;T&gt;.png и пишет строку числового отчёта в tour.tsv; ход тура — в tour.log.
+        /// Таймер окна остановлен: кадр, призрак и HUD обновляются только командами тура.
+        /// TourExitCode: 0 — PASS, 1 — FAIL; окно закрывается в конце тура.
+        /// </summary>
+        private async Task RunTourAsync()
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var seqDir = RepoPath(Path.Combine(opts.Tour!, opts.Seq));
+            Directory.CreateDirectory(seqDir); // RepoPath создаёт каталог файла, здесь нужен сам каталог записи
+            var logPath = Path.Combine(seqDir, "tour.log");
+            var tsvPath = Path.Combine(seqDir, "tour.tsv");
+            var log = new List<string>();
+            var failures = new List<string>();
+
+            // лог пишется построчно, порциями по несколько строк
+            void FlushLog()
+            {
+                if (log.Count > 0)
+                {
+                    File.AppendAllLines(logPath, log);
+                    log.Clear();
+                }
+            }
+
+            void Say(string line)
+            {
+                log.Add(line);
+                if (log.Count >= 4)
+                {
+                    FlushLog();
+                }
+            }
+
+            try
+            {
+                if (track == null)
+                {
+                    Say("RESULT: FAIL: эталон не загрузился");
+                    FlushLog();
+                    TourExitCode = 1;
+                    Close();
+                    return;
+                }
+
+                timer.Stop();
+                media.Pause();
+                paused = true;
+                UpdatePlayButton();
+
+                var canonicalPath = Path.Combine(RepoRoot(), "data", "derived", "trial", opts.Seq + ".canonical.json");
+                var source = ReadCanonicalSource(canonicalPath);
+
+                // моменты тура: из --tour-times либо пять равномерных точек от длительности эталона
+                // (последний кадр track.Frames; совсем короткая запись — минимум 0.4 с)
+                var duration = track.Frames.Count > 0 ? track.Frames[track.Frames.Count - 1].TSec : 0;
+                if (duration < 0.4)
+                {
+                    duration = 0.4;
+                }
+
+                var moments = opts.TourTimes ?? TourSchedule.Times(duration, 5);
+                var zooms = opts.TourZooms ?? new double[] { 1.0, 2.0, 3.0 };
+                Say("seq=" + opts.Seq + " source=" + source + " moments=" + JoinNums(moments, inv) + " zooms=" + JoinNums(zooms, inv));
+
+                // камеры с файлами видео: имя track.Video с заменённым кодом камеры (как в SwitchAngle)
+                var camFiles = new List<(string Cam, string VideoPath)>();
+                var videoName = track.Video;
+                if (videoName != null && Regex.IsMatch(videoName, "c\\d\\d"))
+                {
+                    var camMatch = Regex.Match(videoName, "c\\d\\d");
+                    for (var i = 1; i <= 9; i++)
+                    {
+                        var cam = "c" + i.ToString("00", inv);
+                        var name = videoName.Remove(camMatch.Index, camMatch.Length).Insert(camMatch.Index, cam);
+                        var path = FindVideo(name);
+                        if (path == null)
+                        {
+                            Say("WARN камера " + cam + ": нет файла видео");
+                            continue;
+                        }
+
+                        camFiles.Add((cam, path));
+                    }
+                }
+                else
+                {
+                    for (var i = 1; i <= 9; i++)
+                    {
+                        Say("WARN камера c" + i.ToString("00", inv) + ": нет файла видео");
+                    }
+                }
+
+                var noVideo = camFiles.Count == 0;
+                if (noVideo)
+                {
+                    Say("видео нет ни у одной камеры: тур без видео, сцена в запасном широком виде");
+                }
+
+                // каждый запуск тура начинает отчёт заново: заголовок tour.tsv пишется всегда,
+                // tour.log удаляется, чтобы дописывание строк (AppendAllLines) шло с начала
+                File.WriteAllText(tsvPath, string.Join("\t", TourTsvColumns) + Environment.NewLine);
+                if (File.Exists(logPath))
+                {
+                    File.Delete(logPath);
+                }
+
+                // кадры листов по ключу (момент, множитель), собираются за весь обход камер
+                var shots = new Dictionary<(double T, double Z), List<(string Cam, BitmapSource? Video, BitmapSource Scene)>>();
+
+                foreach (var (cam, videoPath) in camFiles)
+                {
+                    currentCamera = cam;
+                    ghost.CameraYawRad = YawRad(cam);
+                    mediaOpened = false;
+                    media.Source = new Uri(videoPath);
+                    media.Play();
+                    var opened = await WaitFor(() => mediaOpened, TimeSpan.FromSeconds(15));
+                    if (!opened)
+                    {
+                        Say("FAIL камера " + cam + ": видео не открылось за 15 с");
+                        failures.Add("камера " + cam + ": видео не открылось за 15 с");
+                        continue;
+                    }
+
+                    media.Pause();
+                    var rows = new List<string>();
+                    foreach (var t in moments)
+                    {
+                        foreach (var z in zooms)
+                        {
+                            rows.Add(await TourStepAsync(cam, t, z, source, noVideo, shots));
+                        }
+
+                        FlushLog();
+                    }
+
+                    File.AppendAllLines(tsvPath, rows);
+                    var minOpaque = MinSceneOpaquePx(rows);
+                    Say("камера " + cam + ": " + moments.Count + " моментов, " + zooms.Count + " зумов, "
+                        + rows.Count + " строк, sceneOpaquePx минимум " + minOpaque.ToString(inv));
+                    if (minOpaque == 0)
+                    {
+                        failures.Add("камера " + cam + ": кадр сцены пуст");
+                    }
+                }
+
+                if (noVideo)
+                {
+                    // режим без видео: строки по (момент, множитель) с пустым cam и пустыми столбцами рамки
+                    var rows = new List<string>();
+                    foreach (var t in moments)
+                    {
+                        foreach (var z in zooms)
+                        {
+                            rows.Add(await TourStepAsync(string.Empty, t, z, source, noVideo, shots));
+                        }
+
+                        FlushLog();
+                    }
+
+                    File.AppendAllLines(tsvPath, rows);
+                    Say("без видео: " + moments.Count + " моментов, " + zooms.Count + " зумов, " + rows.Count + " строк");
+                }
+
+                FlushLog();
+
+                // листы после обхода всех камер: сетка 3 на 3 по камерам на каждый (момент, множитель)
+                foreach (var t in moments)
+                {
+                    foreach (var z in zooms)
+                    {
+                        if (shots.TryGetValue((t, z), out var cells) && cells.Count > 0)
+                        {
+                            SaveTourSheet(seqDir, opts.Seq, source, t, z, cells, inv);
+                        }
+                    }
+                }
+
+                TourExitCode = failures.Count == 0 ? 0 : 1;
+                Say("RESULT: " + (failures.Count == 0 ? "PASS" : "FAIL: " + string.Join("; ", failures)));
+            }
+            catch (Exception ex)
+            {
+                TourExitCode = 1;
+                Say("RESULT: FAIL: " + ex.GetType().Name + ": " + ex.Message);
+            }
+
+            try
+            {
+                FlushLog();
+            }
+            catch (Exception)
+            {
+                TourExitCode = 1; // лог не записался: вердикт тура недоказуем, считаем тур проваленным
+            }
+
+            Close();
+        }
+
+        /// <summary>Шаг тура на (камера, момент, множитель): пауза на моменте и 600 мс на проявление,
+        /// множитель слайдера, прогон сглаживания (свежий FrameFollower, сброс кадра сцены, 90 тиков
+        /// по 1/30 с от t−3 с), HUD и компоновка, снимки панелей видео и сцены в shots, строка отчёта.</summary>
+        private async Task<string> TourStepAsync(string cam, double t, double z, string source, bool noVideo,
+                Dictionary<(double T, double Z), List<(string Cam, BitmapSource? Video, BitmapSource Scene)>> shots)
+        {
+            var inv = CultureInfo.InvariantCulture;
+            BitmapSource? videoShot = null;
+            if (!noVideo)
+            {
+                media.Position = TimeSpan.FromSeconds(t);
+                await Task.Delay(600);
+            }
+
+            zoomSlider.Value = z;
+
+            // прогон сглаживания: свежий следящий кадр, сброс кадра сцены, тики от t−3 с до t
+            follower = new FrameFollower(camTracks);
+            ghost.ResetFrame();
+            var last = (Zoom: 1.0, PanX: 0.0, PanY: 0.0, Box: default(ScreenBox));
+            for (var k = 0; k <= 89; k++)
+            {
+                var tt = Math.Max(0, t - 3.0 + k / 30.0);
+                last = StepVideoFrame(tt);
+                ghost.SetReference(track!.Sample(tt));
+            }
+
+            UpdateHud(t);
+            UpdateLayout();
+
+            // GhostCanvas не успевает отрисоваться до снимка: ожидание диспетчера не
+            // гарантирует проход отрисовки окна (WPF рендерит по своему таймеру) —
+            // ждём несколько кадров отрисовки (250 мс при 60 Гц)
+            ghost.InvalidateVisual();
+            await Task.Delay(250);
+
+            videoShot = CaptureElement(videoPanel);
+            var sceneShot = CaptureElement(ghostPanel)!;
+
+            // число непрозрачных пикселей кадра сцены (альфа > 0): 0 — призрак и HUD не отрисовались
+            var sceneOpaquePx = CountOpaquePixels(sceneShot);
+            if (!shots.TryGetValue((t, z), out var cells))
+            {
+                cells = new List<(string Cam, BitmapSource? Video, BitmapSource Scene)>();
+                shots[(t, z)] = cells;
+            }
+
+            if (noVideo)
+            {
+                // одна сцена на (момент, множитель) — в листе идёт в ячейки всех девяти камер
+                for (var i = 1; i <= 9; i++)
+                {
+                    cells.Add(("c" + i.ToString("00", inv), null, sceneShot));
+                }
+            }
+            else
+            {
+                cells.Add((cam, videoShot, sceneShot));
+            }
+
+            return BuildTourRow(cam, t, z, source, last, inv, sceneOpaquePx);
+        }
+
+        /// <summary>Строка tour.tsv (S34): числа InvariantCulture «0.###», пустое поле — значения нет.
+        /// Рамка cur* — bbox текущего кадра cams.json этой камеры (без расширения по времени и без
+        /// запаса обуви) тем же отображением, что строит FrameFollower; ghost* — ReferenceBounds;
+        /// feetDy — низ габарита призрака минус линия ног танцора, пересчитанная в панель сцены;
+        /// sceneOpaquePx — число непрозрачных пикселей кадра сцены, последний столбец.</summary>
+        private string BuildTourRow(string cam, double t, double z, string source,
+                (double Zoom, double PanX, double PanY, ScreenBox Box) step, CultureInfo inv, int sceneOpaquePx)
+        {
+            string Num(double v) => v.ToString("0.###", inv);
+
+            var target = follower.LastTarget;
+            var winW = media.ActualWidth;
+            var winH = videoPanel.ActualHeight;
+            var videoW = (double)media.NaturalVideoWidth;
+            var videoH = (double)media.NaturalVideoHeight;
+            var hasVideo = videoOk && mediaOpened && videoW > 0 && winW > 0 && winH > 0;
+            var panAtLimitX = target.MaxPanX > 0 && Math.Abs(step.PanX) >= target.MaxPanX - 0.5;
+            var panAtLimitY = target.MaxPanY > 0 && Math.Abs(step.PanY) >= target.MaxPanY - 0.5;
+
+            var boxLeft = string.Empty;
+            var boxTop = string.Empty;
+            var boxRight = string.Empty;
+            var boxBottom = string.Empty;
+            var feetY = string.Empty;
+            var boxCenterDx = string.Empty;
+            if (step.Box.IsValid)
+            {
+                boxLeft = Num(step.Box.Left);
+                boxTop = Num(step.Box.Top);
+                boxRight = Num(step.Box.Right);
+                boxBottom = Num(step.Box.Bottom);
+                feetY = Num(step.Box.FeetY);
+                boxCenterDx = Num(step.Box.CenterX - (winW / 2.0));
+            }
+
+            var curLeft = string.Empty;
+            var curTop = string.Empty;
+            var curRight = string.Empty;
+            var curBottom = string.Empty;
+            if (hasVideo && cam.Length > 0 && camTracks.TryGetValue(cam, out var camTrack)
+                    && camTrack.TryGetBox(t, 0.0, out var cur))
+            {
+                var s = Math.Min(winW / videoW, winH / videoH);
+                curLeft = Num((winW / 2.0) + ((cur.UMin - (videoW / 2.0)) * s * z) + step.PanX);
+                curTop = Num((winH / 2.0) + ((cur.VMin - (videoH / 2.0)) * s * z) + step.PanY);
+                curRight = Num((winW / 2.0) + ((cur.UMax - (videoW / 2.0)) * s * z) + step.PanX);
+                curBottom = Num((winH / 2.0) + ((cur.VMax - (videoH / 2.0)) * s * z) + step.PanY);
+            }
+
+            var bounds = ghost.ReferenceBounds();
+            var ghostLeft = string.Empty;
+            var ghostTop = string.Empty;
+            var ghostRight = string.Empty;
+            var ghostBottom = string.Empty;
+            var feetDy = string.Empty;
+            if (!bounds.IsEmpty && winH > 0)
+            {
+                ghostLeft = Num(bounds.Left);
+                ghostTop = Num(bounds.Top);
+                ghostRight = Num(bounds.Right);
+                ghostBottom = Num(bounds.Bottom);
+                var gh = ghostPanel.ActualHeight;
+                feetDy = Num(bounds.Bottom - (step.Box.FeetY * (gh / winH)));
+            }
+
+            var cols = new[]
+            {
+                opts.Seq, source, cam, Num(t), Num(z), Num(step.Zoom), Num(target.ZAutoTarget),
+                Num(step.PanX), Num(step.PanY),
+                panAtLimitX ? "1" : "0", panAtLimitY ? "1" : "0",
+                Num(winW), Num(winH), Num(videoW), Num(videoH),
+                boxLeft, boxTop, boxRight, boxBottom, feetY, boxCenterDx,
+                curLeft, curTop, curRight, curBottom,
+                ghostLeft, ghostTop, ghostRight, ghostBottom, feetDy,
+                sceneOpaquePx.ToString(inv),
+            };
+            return string.Join("\t", cols);
+        }
+
+        /// <summary>Минимум последнего поля (sceneOpaquePx) по строкам tour.tsv; нет ни одного числа — 0.</summary>
+        private static int MinSceneOpaquePx(IEnumerable<string> rows)
+        {
+            var min = int.MaxValue;
+            foreach (var row in rows)
+            {
+                var tab = row.LastIndexOf('\t');
+                if (tab >= 0 && int.TryParse(row.Substring(tab + 1), out var v) && v < min)
+                {
+                    min = v;
+                }
+            }
+
+            return min == int.MaxValue ? 0 : min;
+        }
+
+        /// <summary>Лист «девять ракурсов» sheet-z&lt;Z&gt;-t&lt;T&gt;.png (S34): фон #0A0B0E, строка-заголовок,
+        /// сетка 3 на 3 по камерам, в ячейке подпись камеры и кадры видео и сцены по 300 px шириной
+        /// (высота по пропорции исходника), в режиме без видео — только кадр сцены; зазоры 8 px.</summary>
+        private static void SaveTourSheet(string dir, string seq, string source, double t, double z,
+                List<(string Cam, BitmapSource? Video, BitmapSource Scene)> cells, CultureInfo inv)
+        {
+            const double FrameW = 300.0;
+            const double Gap = 8.0;
+            const double CaptionH = 16.0;
+            const double HeaderH = 24.0;
+            var columns = 3;
+
+            double FrameH(BitmapSource bmp) => bmp.PixelWidth > 0 ? FrameW * bmp.PixelHeight / bmp.PixelWidth : FrameW * 9.0 / 16.0;
+
+            // камеры по порядку номера слева направо и сверху вниз
+            var ordered = new List<(string Cam, BitmapSource? Video, BitmapSource Scene)>(cells);
+            ordered.Sort((a, b) => string.CompareOrdinal(a.Cam, b.Cam));
+
+            // высоты строк по самой высокой ячейке строки, верха строк, итоговый размер листа
+            var rowHeights = new double[columns];
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var frameH = Math.Max(
+                    ordered[i].Video == null ? 0 : FrameH(ordered[i].Video!),
+                    FrameH(ordered[i].Scene));
+                rowHeights[i / columns] = Math.Max(rowHeights[i / columns], CaptionH + frameH);
+            }
+
+            var rowTops = new double[columns];
+            var y = HeaderH + Gap;
+            for (var r = 0; r < columns; r++)
+            {
+                rowTops[r] = y;
+                y += rowHeights[r] + Gap;
+            }
+
+            var cellW = ordered.Count > 0 && ordered[0].Video != null ? (2 * FrameW) + Gap : FrameW;
+            var width = (4 * Gap) + (columns * cellW);
+            var height = y;
+
+            var dv = new DrawingVisual();
+            using (var dc = dv.RenderOpen())
+            {
+                dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x0A, 0x0B, 0x0E)), null, new Rect(0, 0, width, height));
+                var header = new FormattedText(
+                    seq + "  источник " + source + "  Кадр x" + z.ToString("0.0", inv) + "  t=" + t.ToString("0.0", inv) + " с",
+                    inv, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 14, Brushes.White, 1.0);
+                dc.DrawText(header, new Point(Gap, 4));
+
+                var caption = new Typeface("Segoe UI");
+                for (var i = 0; i < ordered.Count; i++)
+                {
+                    var x0 = Gap + ((i % columns) * (cellW + Gap));
+                    var y0 = rowTops[i / columns];
+                    dc.DrawText(new FormattedText(ordered[i].Cam, inv, FlowDirection.LeftToRight, caption, 12, Brushes.White, 1.0),
+                        new Point(x0, y0));
+
+                    var frameY = y0 + CaptionH;
+                    if (ordered[i].Video != null)
+                    {
+                        dc.DrawImage(ordered[i].Video, new Rect(x0, frameY, FrameW, FrameH(ordered[i].Video!)));
+                        dc.DrawImage(ordered[i].Scene, new Rect(x0 + FrameW + Gap, frameY, FrameW, FrameH(ordered[i].Scene)));
+                    }
+                    else
+                    {
+                        dc.DrawImage(ordered[i].Scene, new Rect(x0, frameY, FrameW, FrameH(ordered[i].Scene)));
+                    }
+                }
+            }
+
+            var bmp = new RenderTargetBitmap((int)Math.Round(width), (int)Math.Round(height), 96, 96, PixelFormats.Pbgra32);
+            bmp.Render(dv);
+            var enc = new PngBitmapEncoder();
+            enc.Frames.Add(BitmapFrame.Create(bmp));
+            var path = Path.Combine(dir, "sheet-z" + z.ToString("0.0", inv) + "-t" + t.ToString("0.0", inv) + ".png");
+            using (var fs = File.Create(path))
+            {
+                enc.Save(fs);
+            }
+        }
+
+        /// <summary>Снимок элемента в PNG-совместимый BitmapSource (панели тура); пустой элемент — null.
+        /// Рендер через VisualBrush: RenderTargetBitmap.Render(элемент-потомок) рисует содержимое со
+        /// сдвигом VisualOffset элемента внутри окна — панель сцены (вторая колонка сетки) уезжала
+        /// целиком за границы снимка, кадр выходил пустым; кисть же рисует содержимое от (0, 0).</summary>
+        private static BitmapSource? CaptureElement(FrameworkElement element)
+        {
+            var w = (int)Math.Round(element.ActualWidth);
+            var h = (int)Math.Round(element.ActualHeight);
+            if (w <= 0 || h <= 0)
+            {
+                return null;
+            }
+
+            var rect = new System.Windows.Shapes.Rectangle
+            {
+                Width = w,
+                Height = h,
+                Fill = new VisualBrush(element),
+            };
+            rect.Measure(new Size(w, h));
+            rect.Arrange(new Rect(0, 0, w, h));
+
+            var bmp = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+            bmp.Render(rect);
+            bmp.Freeze();
+            return bmp;
+        }
+
+        /// <summary>Число непрозрачных пикселей кадра (байт альфы, каждый четвёртый, больше 0); null — 0.</summary>
+        private static int CountOpaquePixels(BitmapSource? bmp)
+        {
+            if (bmp == null)
+            {
+                return 0;
+            }
+
+            var pixels = new byte[bmp.PixelWidth * bmp.PixelHeight * 4];
+            bmp.CopyPixels(pixels, bmp.PixelWidth * 4, 0);
+            var count = 0;
+            for (var i = 3; i < pixels.Length; i += 4)
+            {
+                if (pixels[i] > 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        /// <summary>Поле source из canonical.json записи (как LoadCamRoot — JsonDocument); нет поля — пусто.</summary>
+        private static string ReadCanonicalSource(string path)
+        {
+            try
+            {
+                using var stream = File.OpenRead(path);
+                using var doc = JsonDocument.Parse(stream);
+                return doc.RootElement.TryGetProperty("source", out var s) && s.ValueKind == JsonValueKind.String
+                        ? s.GetString() ?? string.Empty
+                        : string.Empty;
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        /// <summary>Список чисел через запятую для строки tour.log (InvariantCulture, одна десятая минимум).</summary>
+        private static string JoinNums(IEnumerable<double> values, CultureInfo inv)
+        {
+            var parts = new List<string>();
+            foreach (var v in values)
+            {
+                parts.Add(v.ToString("0.0#", inv));
+            }
+
+            return string.Join(",", parts);
         }
 
         /// <summary>Рендер содержимого окна в PNG (используется --shot и --regress media).</summary>
