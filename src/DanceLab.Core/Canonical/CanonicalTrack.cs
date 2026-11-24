@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 
@@ -7,11 +8,11 @@ namespace DanceLab.Core.Canonical
 {
     /// <summary>
     /// Эталонная последовательность канонических поз (player/trial Contract). Кадры идут по неубывающему
-    /// времени, Sample выдаёт линейную интерполяцию на любой момент. Загрузка из canonical.json formatVersion 1.
+    /// времени, Sample выдаёт линейную интерполяцию на любой момент. Загрузка из canonical.json formatVersion 2.
     /// </summary>
     public sealed class CanonicalTrack
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
 
         public CanonicalTrack(double fps, double legLengthM, IReadOnlyList<CanonicalFrame> frames, string? sequence = null, string? video = null)
         {
@@ -41,7 +42,7 @@ namespace DanceLab.Core.Canonical
 
         public string? Video { get; }
 
-        /// <summary>Читает canonical.json formatVersion 1. Кадры с невалидной костью (короткий или NaN вектор) получают кость с пометкой невалидной.</summary>
+        /// <summary>Читает canonical.json formatVersion 2. Кадры с невалидной костью (короткий или NaN вектор) получают кость с пометкой невалидной; torso.roll и torso.basis (девять чисел) обязательны.</summary>
         public static CanonicalTrack Load(string path)
         {
             using var stream = File.OpenRead(path);
@@ -60,7 +61,7 @@ namespace DanceLab.Core.Canonical
             var frames = new List<CanonicalFrame>();
             foreach (var f in framesEl.EnumerateArray())
             {
-                frames.Add(ParseFrame(f));
+                frames.Add(ParseFrame(f, path));
             }
 
             if (frames.Count == 0)
@@ -112,7 +113,7 @@ namespace DanceLab.Core.Canonical
             return Lerp(a, b, alpha, tSec);
         }
 
-        private static CanonicalFrame ParseFrame(JsonElement f)
+        private static CanonicalFrame ParseFrame(JsonElement f, string path)
         {
             var bones = new double[CanonicalFrame.BoneCount * 3];
             var valid = new bool[CanonicalFrame.BoneCount];
@@ -164,7 +165,45 @@ namespace DanceLab.Core.Canonical
                 heading = GetNum(rootEl, "heading");
             }
 
-            return new CanonicalFrame(t, bones, valid, lean, turn, tilt, forward, side, height, heading);
+            // Формат версии 2 (S39): боковой наклон и оси торса обязательны в каждом кадре.
+            if (!f.TryGetProperty("torso", out var torsoEl) || torsoEl.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException(FrameError(path, t, "нет объекта torso."));
+            }
+
+            if (!torsoEl.TryGetProperty("roll", out var rollEl) || rollEl.ValueKind != JsonValueKind.Number)
+            {
+                throw new InvalidDataException(FrameError(path, t, "нет числа torso.roll."));
+            }
+
+            if (!torsoEl.TryGetProperty("basis", out var basisEl) || basisEl.ValueKind != JsonValueKind.Array)
+            {
+                throw new InvalidDataException(FrameError(path, t, "нет массива torso.basis."));
+            }
+
+            var basis = new double[9];
+            var bi = 0;
+            foreach (var item in basisEl.EnumerateArray())
+            {
+                if (bi >= 9 || item.ValueKind != JsonValueKind.Number)
+                {
+                    throw new InvalidDataException(FrameError(path, t, "массив torso.basis должен содержать девять чисел."));
+                }
+
+                basis[bi++] = item.GetDouble();
+            }
+
+            if (bi != 9)
+            {
+                throw new InvalidDataException(FrameError(path, t, "массив torso.basis должен содержать девять чисел."));
+            }
+
+            return new CanonicalFrame(t, bones, valid, lean, turn, tilt, forward, side, height, heading, rollEl.GetDouble(), basis);
+        }
+
+        private static string FrameError(string path, double tSec, string what)
+        {
+            return path + ": кадр t=" + tSec.ToString("0.######", CultureInfo.InvariantCulture) + ": " + what;
         }
 
         private static bool TryReadVec(JsonElement parent, string name, out Vec3 v)
@@ -197,7 +236,7 @@ namespace DanceLab.Core.Canonical
         }
 
         private static CanonicalFrame Copy(CanonicalFrame f, double tSec) =>
-            new CanonicalFrame(tSec, f.Bones, f.BoneValid, f.TorsoLeanRad, f.TorsoTurnRad, f.HeadTiltRad, f.RootForward, f.RootSide, f.RootHeight, f.HeadingRad);
+            new CanonicalFrame(tSec, f.Bones, f.BoneValid, f.TorsoLeanRad, f.TorsoTurnRad, f.HeadTiltRad, f.RootForward, f.RootSide, f.RootHeight, f.HeadingRad, f.TorsoRollRad, f.TorsoBasis);
 
         private static CanonicalFrame Lerp(CanonicalFrame a, CanonicalFrame b, double alpha, double tSec)
         {
@@ -229,6 +268,27 @@ namespace DanceLab.Core.Canonical
             }
 
             double L(double x, double y) => x + ((y - x) * alpha);
+
+            // Оси торса (S39): у обоих кадров — покомпонентная линейная интерполяция,
+            // только у одного — берётся имеющийся, ни у одного — null.
+            double[]? basis = null;
+            if (a.TorsoBasis != null && b.TorsoBasis != null)
+            {
+                basis = new double[9];
+                for (var i = 0; i < 9; i++)
+                {
+                    basis[i] = L(a.TorsoBasis[i], b.TorsoBasis[i]);
+                }
+            }
+            else if (a.TorsoBasis != null)
+            {
+                basis = a.TorsoBasis;
+            }
+            else if (b.TorsoBasis != null)
+            {
+                basis = b.TorsoBasis;
+            }
+
             return new CanonicalFrame(
                 tSec,
                 bones,
@@ -239,7 +299,9 @@ namespace DanceLab.Core.Canonical
                 L(a.RootForward, b.RootForward),
                 L(a.RootSide, b.RootSide),
                 L(a.RootHeight, b.RootHeight),
-                L(a.HeadingRad, b.HeadingRad));
+                L(a.HeadingRad, b.HeadingRad),
+                L(a.TorsoRollRad, b.TorsoRollRad),
+                basis);
         }
     }
 }

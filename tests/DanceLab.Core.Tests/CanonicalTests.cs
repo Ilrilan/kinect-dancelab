@@ -408,7 +408,7 @@ namespace DanceLab.Core.Tests
         public void TrackSampleInterpolatesLinearly()
         {
             const string json = @"{
-  ""formatVersion"": 1,
+  ""formatVersion"": 2,
   ""sequence"": ""s"",
   ""video"": ""v.mp4"",
   ""fps"": 60,
@@ -417,11 +417,11 @@ namespace DanceLab.Core.Tests
   ""frames"": [
     { ""t"": 0.0,
       ""bones"": { ""uArmL"": [0,0,1], ""uArmR"": [0,0,1], ""lArmL"": [0,0,1], ""lArmR"": [0,0,1], ""thighL"": [0,1,0], ""thighR"": [0,1,0], ""shinL"": [0,1,0], ""shinR"": [0,1,0] },
-      ""torso"": { ""lean"": 0.0, ""turn"": 0.0 }, ""head"": { ""tilt"": 0.0 },
+      ""torso"": { ""lean"": 0.0, ""turn"": 0.0, ""roll"": 0, ""basis"": [1,0,0, 0,1,0, 0,0,1] }, ""head"": { ""tilt"": 0.0 },
       ""root"": { ""forward"": 0.0, ""side"": 0.0, ""height"": 0.9, ""heading"": 0.0 } },
     { ""t"": 0.5,
       ""bones"": { ""uArmL"": [1,0,0], ""uArmR"": [0,0,1], ""lArmL"": [0,0,1], ""lArmR"": [0,0,1], ""thighL"": [0,1,0], ""thighR"": [0,1,0], ""shinL"": [0,1,0], ""shinR"": [0,1,0] },
-      ""torso"": { ""lean"": 0.5, ""turn"": 0.2 }, ""head"": { ""tilt"": 0.1 },
+      ""torso"": { ""lean"": 0.5, ""turn"": 0.2, ""roll"": 0, ""basis"": [1,0,0, 0,1,0, 0,0,1] }, ""head"": { ""tilt"": 0.1 },
       ""root"": { ""forward"": 1.0, ""side"": -1.0, ""height"": 0.8, ""heading"": 1.0 } }
   ]
 }";
@@ -464,7 +464,7 @@ namespace DanceLab.Core.Tests
         [Fact]
         public void TrackLoadRejectsUnknownFormatVersion()
         {
-            var path = TempFile("{ \"formatVersion\": 2, \"frames\": [] }");
+            var path = TempFile("{ \"formatVersion\": 3, \"frames\": [] }");
             try
             {
                 Assert.Throws<InvalidDataException>(() => CanonicalTrack.Load(path));
@@ -472,6 +472,117 @@ namespace DanceLab.Core.Tests
             finally
             {
                 File.Delete(path);
+            }
+        }
+
+        /// <summary>Формат версии 1 (без torso.roll и torso.basis) загрузчиком версии 2 отклоняется.</summary>
+        [Fact]
+        public void TrackLoadRejectsFormatVersion1()
+        {
+            var path = TempFile("{ \"formatVersion\": 1, \"frames\": [] }");
+            try
+            {
+                Assert.Throws<InvalidDataException>(() => CanonicalTrack.Load(path));
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        /// <summary>Версия 2 без torso.basis в кадре — InvalidDataException.</summary>
+        [Fact]
+        public void TrackLoadRejectsMissingTorsoBasis()
+        {
+            const string json = @"{
+  ""formatVersion"": 2,
+  ""frames"": [
+    { ""t"": 0.0, ""torso"": { ""lean"": 0.0, ""turn"": 0.0, ""roll"": 0.0 }, ""head"": { ""tilt"": 0.0 } }
+  ]
+}";
+            var path = TempFile(json);
+            try
+            {
+                Assert.Throws<InvalidDataException>(() => CanonicalTrack.Load(path));
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        /// <summary>Версия 2 без torso.roll в кадре — InvalidDataException.</summary>
+        [Fact]
+        public void TrackLoadRejectsMissingTorsoRoll()
+        {
+            const string json = @"{
+  ""formatVersion"": 2,
+  ""frames"": [
+    { ""t"": 0.0, ""torso"": { ""lean"": 0.0, ""turn"": 0.0, ""basis"": [1,0,0, 0,1,0, 0,0,1] }, ""head"": { ""tilt"": 0.0 } }
+  ]
+}";
+            var path = TempFile(json);
+            try
+            {
+                Assert.Throws<InvalidDataException>(() => CanonicalTrack.Load(path));
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        /// <summary>Загруженный кадр версии 2 несёт torso.roll и torso.basis (девять чисел, значения сохраняются).</summary>
+        [Fact]
+        public void TrackLoadKeepsTorsoRollAndBasis()
+        {
+            const string json = @"{
+  ""formatVersion"": 2,
+  ""frames"": [
+    { ""t"": 0.0, ""torso"": { ""lean"": 0.1, ""turn"": 0.2, ""roll"": 0.3, ""basis"": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9] }, ""head"": { ""tilt"": 0.0 } }
+  ]
+}";
+            var path = TempFile(json);
+            try
+            {
+                var frame = CanonicalTrack.Load(path).Frames[0];
+                Assert.Equal(0.3, frame.TorsoRollRad, 9);
+                Assert.True(frame.HasTorsoBasis);
+                Assert.NotNull(frame.TorsoBasis);
+                Assert.Equal(9, frame.TorsoBasis!.Length);
+                for (var i = 0; i < 9; i++)
+                {
+                    Assert.Equal(0.1 * (i + 1), frame.TorsoBasis[i], 9);
+                }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        /// <summary>Интерполяция версии 2 (S39): roll линейно, basis покомпонентно, середина даёт среднее арифметическое.</summary>
+        [Fact]
+        public void SampleInterpolatesTorsoRollAndBasis()
+        {
+            var bones = new double[CanonicalFrame.BoneCount * 3];
+            var valid = new bool[CanonicalFrame.BoneCount];
+            var basisA = new double[] { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+            var basisB = new double[] { 0, 1, 0, 1, 0, 0, 0, 0, 1 };
+            var track = new CanonicalTrack(60, 0.8, new List<CanonicalFrame>
+            {
+                new CanonicalFrame(0.0, bones, valid, 0, 0, 0, 0, 0, 0, 0, 0.0, basisA),
+                new CanonicalFrame(1.0, bones, valid, 0, 0, 0, 0, 0, 0, 0, 0.4, basisB),
+            });
+
+            var mid = track.Sample(0.5);
+            Assert.Equal(0.2, mid.TorsoRollRad, 9);
+            Assert.True(mid.HasTorsoBasis);
+            Assert.NotNull(mid.TorsoBasis);
+            Assert.Equal(9, mid.TorsoBasis!.Length);
+            for (var i = 0; i < 9; i++)
+            {
+                Assert.Equal((basisA[i] + basisB[i]) / 2.0, mid.TorsoBasis[i], 9);
             }
         }
 

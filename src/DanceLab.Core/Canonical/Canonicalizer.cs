@@ -16,6 +16,10 @@ namespace DanceLab.Core.Canonical
     /// (вперёд — по взгляду, side — влево от взгляда); в метрику пробы корень не входит.
     /// Высота корня считается над полом сцены floorYm (S15: оценка пола живой сцены по лодыжкам),
     /// не над нулём сенсора; floorYm по умолчанию 0 — прежнее поведение (высота над y=0 сенсора).
+    /// Формат эталона версии 2 (S39): дополнительно заполняет боковой наклон торса TorsoRollRad
+    /// и оси торса TorsoBasis (девять чисел в координатах (L, Y, F)), а направление взгляда при
+    /// заданном HeadingUnwrapper разворачивается по времени (не свёрнуто в ±π, устойчиво на наклонах
+    /// за вертикаль и в сбойных кадрах).
     /// </summary>
     public static class Canonicalizer
     {
@@ -49,7 +53,7 @@ namespace DanceLab.Core.Canonical
             new[] { "AnkleRight", "RightAnkle", "ankle_r" },
         };
 
-        public static CanonicalFrame ToCanonical(ReconstructedPose pose, IReadOnlyDictionary<string, LimbLengths>? boneLengths, double legLengthM, double floorYm = 0)
+        public static CanonicalFrame ToCanonical(ReconstructedPose pose, IReadOnlyDictionary<string, LimbLengths>? boneLengths, double legLengthM, double floorYm = 0, HeadingUnwrapper? heading = null)
         {
             if (pose == null)
             {
@@ -145,23 +149,43 @@ namespace DanceLab.Core.Canonical
             EmitBone(bones, valid, 6, j[KneeL], j[AnkleL], side, up, forward, upOk);
             EmitBone(bones, valid, 7, j[KneeR], j[AnkleR], side, up, forward, upOk);
 
-            var forwardH = new Vec3(forward.X, 0, forward.Z);
-            var heading = 0.0;
-            if (forwardH.Length > 1e-9)
+            // направление взгляда (S39): сырой азимут горизонтальной проекции переда торса,
+            // развёрнутый по времени через HeadingUnwrapper, если он задан; в развалившемся
+            // кадре (upOk == false) unwrapper не подкармливается — держим прежнее направление
+            double h;
+            if (!upOk)
             {
-                forwardH = forwardH.Normalized();
-                heading = Math.Atan2(forwardH.X, forwardH.Z);
+                h = heading?.Current ?? 0.0;
             }
             else
             {
-                forwardH = new Vec3(0, 0, 1);
+                var fh = new Vec3(forward.X, 0, forward.Z);
+                var w = fh.Length; // forward единичный: надёжность 0..1
+                var raw = w > 1e-9 ? Math.Atan2(fh.X, fh.Z) : (heading?.LastRaw ?? 0.0);
+                h = heading != null ? heading.Update(raw, w) : raw;
             }
 
-            // наклон торса от вертикали, вперёд — плюс (canonical_export.py:150-151)
+            var yAxis = new Vec3(0, 1, 0);
+            var fDir = new Vec3(Math.Sin(h), 0, Math.Cos(h)); // F — вперёд по взгляду
+            var lDir = Vec3.Cross(yAxis, fDir);               // L = Y × F — влево от взгляда
+
+            // наклон торса от вертикали, вперёд — плюс (canonical_export.py:150-151);
+            // боковой наклон roll = atan2(−up·L, up·U1), U1 = Y·cos(lean) + F·sin(lean) (S39);
+            // оси торса basis — построчно left, up, fwd в координатах (L, Y, F) (S39)
             var lean = 0.0;
+            var roll = 0.0;
+            double[]? basis = null;
             if (upOk)
             {
-                lean = Math.Atan2(Vec3.Dot(up, forwardH), Vec3.Dot(up, new Vec3(0, 1, 0)));
+                lean = Math.Atan2(Vec3.Dot(up, fDir), Vec3.Dot(up, yAxis));
+                var u1 = (yAxis * Math.Cos(lean)) + (fDir * Math.Sin(lean));
+                roll = Math.Atan2(-Vec3.Dot(up, lDir), Vec3.Dot(up, u1));
+                basis = new[]
+                {
+                    Vec3.Dot(side, lDir), Vec3.Dot(side, yAxis), Vec3.Dot(side, fDir),
+                    Vec3.Dot(up, lDir), Vec3.Dot(up, yAxis), Vec3.Dot(up, fDir),
+                    Vec3.Dot(forward, lDir), Vec3.Dot(forward, yAxis), Vec3.Dot(forward, fDir),
+                };
             }
 
             // скрутка торса: линия плеч относительно бёдерно-заданной системы (canonical_export.py:143-146)
@@ -185,13 +209,12 @@ namespace DanceLab.Core.Canonical
             double rootForward = 0, rootSide = 0, rootHeight = 0;
             if (rootOk)
             {
-                var leftOfView = new Vec3(forwardH.Z, 0, -forwardH.X);
-                rootForward = Vec3.Dot(rootPos, forwardH) / leg;
-                rootSide = Vec3.Dot(rootPos, leftOfView) / leg;
+                rootForward = Vec3.Dot(rootPos, fDir) / leg;
+                rootSide = Vec3.Dot(rootPos, lDir) / leg;
                 rootHeight = (rootPos.Y - floorYm) / leg; // S15: над полом сцены, не над нулём сенсора
             }
 
-            return new CanonicalFrame(pose.DeviceTimeUs / 1e6, bones, valid, lean, turn, headTilt, rootForward, rootSide, rootHeight, heading);
+            return new CanonicalFrame(pose.DeviceTimeUs / 1e6, bones, valid, lean, turn, headTilt, rootForward, rootSide, rootHeight, h, torsoRollRad: roll, torsoBasis: basis);
         }
 
         private static double LegLength(double legLengthM, IReadOnlyDictionary<string, LimbLengths>? boneLengths)

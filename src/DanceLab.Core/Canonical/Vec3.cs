@@ -3,7 +3,7 @@ using System;
 namespace DanceLab.Core.Canonical
 {
     /// <summary>Трёхмерный вектор для построения канонической позы.</summary>
-    internal readonly struct Vec3
+    public readonly struct Vec3
     {
         public Vec3(double x, double y, double z)
         {
