@@ -106,8 +106,8 @@ namespace PlayerTrial
     /// Сцена призраков 3D (S18): мир поворачивается вокруг вертикали на -CameraYawRad матрицей 3x3, затем камера
     /// на D метров на высоте центра сцены с перспективным делением f = D / (D + pz''); графический движок не используется.
     /// Эталон-призрак фиксированным полупрозрачным цветом и призрак пользователя с краской кости по отклонению
-    /// (мёртвая зона TrialParams не красит, дальше плавно к насыщению). Тело капсулами одним проходом OnRender,
-    /// радиус капсулы умножается на f (глубина). Пол и сетка — линии пола 4x4 м в той же проекции.
+    /// (мёртвая зона TrialParams не красит, дальше плавно к насыщению). Тело капсулами-конусами одним проходом
+    /// OnRender (S43), радиус конца умножается на f (глубина). Пол и сетка — линии пола 4x4 м в той же проекции.
     /// Разметка переда/зада (S20, E7): капсула рисуется тремя слоями — тонкий нейтральный ободок базы, поверх
     /// переднее и заднее ядро, смещённые в 3D по forward торса до проекции (в профиль слои сходятся на ребро);
     /// эталон — непрозрачные янтарь/графит, пользователь — 0.75 поверх краски отклонений; торс — те же передняя
@@ -119,6 +119,9 @@ namespace PlayerTrial
         private static readonly Pen GridPen = Freeze(new Pen(new SolidColorBrush(Color.FromRgb(0x2c, 0x2e, 0x36)), 1));
         private static readonly Pen FloorPen = Freeze(new Pen(new SolidColorBrush(Color.FromRgb(0x4c, 0xaf, 0x50)), 2));
         private static readonly Brush LabelBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x9a, 0xa0, 0xaa)));
+
+        /// <summary>Подложка подписей сцены (S41): цвет фона #0A0B0E с непрозрачностью 0xB0 (приём из SceneCanvas).</summary>
+        private static readonly Brush LabelPillBrush = Freeze(new SolidColorBrush(Color.FromArgb(0xB0, 0x0A, 0x0B, 0x0E)));
 
         /// <summary>Цвет эталон-призрака (как призрак в sensor_view).</summary>
         private static readonly Color ReferenceColor = Color.FromRgb(0x7f, 0xd3, 0xff);
@@ -155,7 +158,7 @@ namespace PlayerTrial
             /// <summary>Холодный/тёмный оттенок заднего слоя и задней панели.</summary>
             public Color Back { get; }
 
-            /// <summary>Нейтральный цвет тонкого ободка базовой капсулы (у пользователя поверх — краска отклонений).</summary>
+            /// <summary>Цвет тонкого ободка базовой капсулы: у эталона — цвет зада (E53), у пользователя — светлый, поверх краска отклонений.</summary>
             public Color Rim { get; }
 
             /// <summary>Цвет купола бейсболки (чуть темнее базового цвета призрака).</summary>
@@ -177,9 +180,9 @@ namespace PlayerTrial
             public double PanelBackOpacity { get; }
         }
 
-        /// <summary>Разметка эталона: непрозрачные слои — перед тёплый янтарный, зад глубокий сине-графитовый; ободок нейтральный (E7).</summary>
+        /// <summary>Разметка эталона: непрозрачные слои — перед тёплый янтарный, зад глубокий сине-графитовый; ободок = цвет зада, чтобы серпики слоёв на сгибах сливались с задом (E7, E53).</summary>
         private static readonly GhostSkin ReferenceSkin = new GhostSkin(
-            Color.FromRgb(0xFF, 0xC8, 0x5C), Color.FromRgb(0x22, 0x34, 0x4A), Color.FromRgb(0x8E, 0x99, 0xA3),
+            Color.FromRgb(0xFF, 0xC8, 0x5C), Color.FromRgb(0x22, 0x34, 0x4A), Color.FromRgb(0x22, 0x34, 0x4A),
             Color.FromRgb(0x50, 0x93, 0xBF), Color.FromRgb(0x71, 0xB5, 0xDD), 1.0, 1.0, 1.0, 1.0);
 
         /// <summary>Разметка пользователя: та же схема, слои 0.75 поверх краски отклонений, панели торса 0.75/0.7 (E7).</summary>
@@ -192,9 +195,6 @@ namespace PlayerTrial
 
         /// <summary>Толщина слоёв переда/зада: ~85% прежней базовой капсулы — ядро поверхности (S20, E7).</summary>
         private const double FrontBackWidthFrac = 0.85;
-
-        /// <summary>Толщина нейтрального ободка базовой капсулы: ~30% прежней базовой (E7).</summary>
-        private const double RimWidthFrac = 0.3;
 
         /// <summary>Смещение панелей торса: доли длины ноги (0.08 * рост в долях, S20).</summary>
         private const double TorsoPanelOffsetFrac = 0.08;
@@ -319,8 +319,8 @@ namespace PlayerTrial
 
         /// <summary>
         /// Габарит эталон-призрака в пикселях панели сцены по той же проекции, что OnRender (S34, tour.tsv ghost*):
-        /// голова с куполом бейсболки (радиус 1.06) и козырьком, концы капсул, расширенные на радиус капсулы.
-        /// Эталона нет — Rect.Empty.
+        /// голова с куполом бейсболки (радиус 1.06) и козырьком, концы костей, расширенные на радиусы
+        /// конусов в суставах (S43). Эталона нет — Rect.Empty.
         /// </summary>
         public Rect ReferenceBounds()
         {
@@ -379,8 +379,9 @@ namespace PlayerTrial
             Take(P(brimTipL));
             Take(P(brimTipR));
 
-            // кость: оба конца валидной кости, расширенные на радиус капсулы в пикселях (те же радиусы, что Capsule)
-            void Bone(int index, GhostVec a, GhostVec b, double radiusM)
+            // кость: оба конца валидной кости, расширенные на радиус конуса сустава в пикселях
+            // (те же радиусы проксимального и дистального концов, что Capsule, S43)
+            void Bone(int index, GhostVec a, GhostVec b, double radiusA, double radiusB)
             {
                 if (!rf.BoneValid[index])
                 {
@@ -388,25 +389,81 @@ namespace PlayerTrial
                 }
 
                 var pa = P(a);
-                var ra = radiusM * scale * F(a);
+                var ra = radiusA * scale * F(a);
                 Take(new Point(pa.X - ra, pa.Y - ra));
                 Take(new Point(pa.X + ra, pa.Y + ra));
                 var pb = P(b);
-                var rb = radiusM * scale * F(b);
+                var rb = radiusB * scale * F(b);
                 Take(new Point(pb.X - rb, pb.Y - rb));
                 Take(new Point(pb.X + rb, pb.Y + rb));
             }
 
-            Bone(0, j.ShL, j.ElbowL, 0.17 * l.UpperArm);
-            Bone(1, j.ShR, j.ElbowR, 0.17 * l.UpperArm);
-            Bone(2, j.ElbowL, j.WristL, 0.14 * l.LowerArm);
-            Bone(3, j.ElbowR, j.WristR, 0.14 * l.LowerArm);
-            Bone(4, j.HipL, j.KneeL, 0.17 * l.Thigh);
-            Bone(5, j.HipR, j.KneeR, 0.17 * l.Thigh);
-            Bone(6, j.KneeL, j.AnkleL, 0.12 * l.Shin);
-            Bone(7, j.KneeR, j.AnkleR, 0.12 * l.Shin);
+            var rHip = 0.17 * l.Thigh;
+            var rKnee = 0.5 * ((0.17 * l.Thigh) + (0.12 * l.Shin));
+            var rAnkle = 0.12 * l.Shin;
+            var rSh = 0.17 * l.UpperArm;
+            var rElbow = 0.5 * ((0.17 * l.UpperArm) + (0.14 * l.LowerArm));
+            var rWrist = 0.14 * l.LowerArm;
+            Bone(0, j.ShL, j.ElbowL, rSh, rElbow);
+            Bone(1, j.ShR, j.ElbowR, rSh, rElbow);
+            Bone(2, j.ElbowL, j.WristL, rElbow, rWrist);
+            Bone(3, j.ElbowR, j.WristR, rElbow, rWrist);
+            Bone(4, j.HipL, j.KneeL, rHip, rKnee);
+            Bone(5, j.HipR, j.KneeR, rHip, rKnee);
+            Bone(6, j.KneeL, j.AnkleL, rKnee, rAnkle);
+            Bone(7, j.KneeR, j.AnkleR, rKnee, rAnkle);
 
             return new Rect(minX, minY, maxX - minX, maxY - minY);
+        }
+
+        /// <summary>
+        /// Экранная точка корня эталон-призрака: проекция мировой точки (Root.X, Root.Y, Root.Z) из
+        /// Solve(reference, lengths, −groundShiftU) той же проекцией, что ReferenceBounds — те же
+        /// масштаб, центр и цель камеры. Эталона нет — null.
+        /// </summary>
+        private Point? ReferenceRootPoint()
+        {
+            if (reference == null)
+            {
+                return null;
+            }
+
+            var rf = reference;
+            UpdateCameraTarget();
+
+            // масштаб и центр — те же формулы кадра сцены, что в OnRender и ReferenceBounds (S26)
+            var scale = sceneFrame.ScalePxPerM;
+            if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            {
+                scale = ActualHeight / 3.2;
+            }
+
+            var cx = sceneFrame.CenterScreenX;
+            var cy = sceneFrame.FloorScreenY - (SceneCenterYm * scale);
+
+            var j = Solve(rf, lengths, -groundShiftU);
+            return Project(j.Root.X, j.Root.Y, j.Root.Z, cx, cy, scale);
+        }
+
+        /// <summary>
+        /// Экранная X-координата проекции корня эталон-призрака для отчёта тура (S34, tour.tsv ghostRootDx):
+        /// точка мира (Root.X, Root.Y, Root.Z) из Solve(reference, lengths, −groundShiftU) той же проекцией,
+        /// что ReferenceBounds (те же масштаб, центр и цель камеры). Эталона нет — NaN.
+        /// </summary>
+        public double ReferenceRootX()
+        {
+            var p = ReferenceRootPoint();
+            return p.HasValue ? p.Value.X : double.NaN;
+        }
+
+        /// <summary>
+        /// Экранная Y-координата проекции корня эталон-призрака для отчёта тура (S34): та же точка мира
+        /// и та же проекция, что ReferenceRootX. Эталона нет — NaN.
+        /// </summary>
+        public double ReferenceRootY()
+        {
+            var p = ReferenceRootPoint();
+            return p.HasValue ? p.Value.Y : double.NaN;
         }
 
         /// <summary>
@@ -489,6 +546,9 @@ namespace PlayerTrial
             {
                 DrawGhost(dc, user, UserBaseColor, UserSkin, userDeviation, 0.85, cx, cy, scale, 0.0);
             }
+
+            // подписи на подложках поверх призраков (S41): призрак проходит под ними
+            DrawLabels(dc, w, cx, cy, scale);
         }
 
         /// <summary>Цель камеры сцены из последнего кадра SceneFollower (S26) — общая для OnRender и ReferenceBounds.</summary>
@@ -541,16 +601,34 @@ namespace PlayerTrial
                 FloorLine(dc, -2, m, 2, m, GridPen, cx, cy, scale);     // вдоль x на z = m
             }
 
-            // зелёная линия пола — ось x мира через цель камеры (S26): при любом yaw f = 1 в точке цели,
-            // её экранная точка — (cx, cy + SceneCenterYm*scale); сетка вокруг мирового начала не двигается
-            FloorLine(dc, targetXm - 4, 0, targetXm + 4, 0, FloorPen, cx, cy, scale);
-            var floorScreenY = cy + (SceneCenterYm * scale);
-            Text(dc, "пол", 6, floorScreenY - 16, 11, FloorPen.Brush);
+            // зелёная линия пола поперёк взгляда камеры (S40): направление экранной горизонтали в мире
+            // H = (cos θ, 0, −sin θ), θ = yaw + фронт сцены; от target − 4·H до target + 4·H линия
+            // перпендикулярна взгляду, лежит на одной глубине (f = 1 на обоих концах), на экране
+            // горизонтальна и не уходит за камеру; сетка вокруг мирового начала не двигается
+            var th = cameraYawRad + StageFrontOffsetRad;
+            var hx = Math.Cos(th);
+            var hz = -Math.Sin(th);
+            FloorLine(dc, targetXm - (4 * hx), targetZm - (4 * hz), targetXm + (4 * hx), targetZm + (4 * hz), FloorPen, cx, cy, scale);
+        }
 
-            // подпись панели прижата к правому верхнему углу: слева её перекрывает HUD пробы
+        /// <summary>
+        /// Подписи сцены на подложках (S41), рисуются после призраков, чтобы те проходили под ними:
+        /// «пол» у левого конца линии пола и заголовок панели у правого верхнего угла.
+        /// </summary>
+        private void DrawLabels(DrawingContext dc, double w, double cx, double cy, double scale)
+        {
+            // подпись «пол» прижата к левому краю панели на подложке (S40, S41, E53): линия пола
+            // длиной 8 м уходит за край, левый конец вне панели; линия на экране горизонтальна
+            // (на обоих концах f = 1), поэтому высота подписи — Y проекции точки цели;
+            // текст на x = 12, чтобы подложка (левое поле 8) начиналась в 4 px от края и не обрезалась
+            var floorY = Project(targetXm, 0, targetZm, cx, cy, scale).Y;
+            TextOnPill(dc, MakeText("пол", 11, FloorPen.Brush), 12, floorY - 16);
+
+            // подпись панели прижата к правому верхнему углу: слева её перекрывает HUD пробы;
+            // позиция текста сохранена, подложка с полями 8 и 4 рисуется вокруг него
             var deg = (cameraYawRad * 180.0 / Math.PI).ToString("0", System.Globalization.CultureInfo.InvariantCulture);
             var title = MakeText("сцена 3D (азимут " + deg + "°), сетка пола 1 м", 13, LabelBrush);
-            dc.DrawText(title, new Point(w - title.Width - 8, 6));
+            TextOnPill(dc, title, w - title.Width - 8, 6);
         }
 
         /// <summary>Линия на полу от (x1, 0, z1) до (x2, 0, z2) в проекции сцены.</summary>
@@ -659,9 +737,10 @@ namespace PlayerTrial
 
         /// <summary>
         /// Прямая кинематика: корень от RootForward/RootSide/RootHeight с heading, торс по lean/turn, кости по направлениям
-        /// канонической позы. Разметка переда/зада (S20): капсулы тремя слоями (база + перед/зад со смещением в 3D по
-        /// fwdT до проекции, ближний слой поверх дальнего), панели торса ±fwdT*0.08*leg, бейсболка с козырьком вперёд
-        /// по heading, стрелка направления на полу от проекции корня вперёд по heading.
+        /// канонической позы. Разметка переда/зада (S20): конечности — конусы с закруглёнными концами тремя слоями
+        /// (ободок + перед/зад со смещением в 3D по fwdT до проекции, ближний слой поверх дальнего), панели торса
+        /// ±fwdT*0.08*leg, бейсболка с козырьком вперёд по heading, стрелка направления на полу от проекции корня
+        /// вперёд по heading.
         /// rootShiftU — сдвиг корня по вертикали в долях длины ноги (S32: эталон опускается на пол, у пользователя 0).
         /// </summary>
         private void DrawGhost(DrawingContext dc, CanonicalFrame f, Color baseColor, GhostSkin skin, double[]? deviation, double opacity, double cx, double cy, double scale, double rootShiftU)
@@ -679,31 +758,40 @@ namespace PlayerTrial
                 dc.DrawLine(new Pen(brush, widthPx) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round }, P(a), P(b));
             }
 
-            // капсула кости тремя слоями (S20, E7): тонкий нейтральный ободок базы (у пользователя — краска
-            // отклонений), поверх зад и перед ядром ~85% прежней базовой со смещением концов в 3D по fwdT до
-            // проекции; ближний к камере слой рисуется последним — сзади виден графит, спереди янтарь, в
-            // профиль слои сходятся на ребро ободка
-            void Capsule(int index, GhostVec a, GhostVec b, double radiusM)
+            // капсула конечности — конус с закруглёнными концами (S43): пиксельный радиус каждого конца =
+            // радиус сустава в метрах × scale × глубина конца; три слоя одной формы (S20, E7): тонкий
+            // ободок базы (у эталона — цвет зада, у пользователя — краска отклонений), поверх зад и перед ядром ~85%
+            // со смещением концов в 3D по fwdT до проекции; ближний к камере слой рисуется последним —
+            // сзади виден графит, спереди янтарь, в профиль слои сходятся на ребро ободка
+            void Capsule(int index, GhostVec a, GhostVec b, double radiusA, double radiusB)
             {
                 if (!f.BoneValid[index])
                 {
                     return;
                 }
 
-                var width = 2 * radiusM * scale * 0.5 * (F(a) + F(b));
-                var paint = deviation != null ? DeviationColor(deviation[index], baseColor) : skin.Rim;
-                Line(a, b, width * RimWidthFrac, paint, 1.0);
-                var off = j.FwdT * (radiusM * FrontBackOffsetFrac);
-                var layerWidth = width * FrontBackWidthFrac;
-                if (F(a + off) >= F(a - off))
+                void Cone(GhostVec from, GhostVec to, double raPx, double rbPx, Color color, double alpha)
                 {
-                    Line(a - off, b - off, layerWidth, skin.Back, skin.BackOpacity);
-                    Line(a + off, b + off, layerWidth, skin.Front, skin.FrontOpacity);
+                    dc.DrawGeometry(Fade(color, alpha), null, ConeGeometry(P(from), P(to), raPx, rbPx));
+                }
+
+                var raPx = radiusA * scale * F(a);
+                var rbPx = radiusB * scale * F(b);
+                var paint = deviation != null ? DeviationColor(deviation[index], baseColor) : skin.Rim;
+                Cone(a, b, raPx, rbPx, paint, 1.0);
+                var offA = j.FwdT * (radiusA * FrontBackOffsetFrac);
+                var offB = j.FwdT * (radiusB * FrontBackOffsetFrac);
+                var layerRa = raPx * FrontBackWidthFrac;
+                var layerRb = rbPx * FrontBackWidthFrac;
+                if (F(a + offA) >= F(a - offA))
+                {
+                    Cone(a - offA, b - offB, layerRa, layerRb, skin.Back, skin.BackOpacity);
+                    Cone(a + offA, b + offB, layerRa, layerRb, skin.Front, skin.FrontOpacity);
                 }
                 else
                 {
-                    Line(a + off, b + off, layerWidth, skin.Front, skin.FrontOpacity);
-                    Line(a - off, b - off, layerWidth, skin.Back, skin.BackOpacity);
+                    Cone(a + offA, b + offB, layerRa, layerRb, skin.Front, skin.FrontOpacity);
+                    Cone(a - offA, b - offB, layerRa, layerRb, skin.Back, skin.BackOpacity);
                 }
             }
 
@@ -814,15 +902,22 @@ namespace PlayerTrial
             crown.Freeze();
             dc.DrawGeometry(Fade(skin.Cap, 1.0), null, crown);
 
-            // капсулы по костям: индекс отклонения = порядок CanonicalFrame.BoneNames
-            Capsule(0, j.ShL, j.ElbowL, 0.17 * l.UpperArm);
-            Capsule(1, j.ShR, j.ElbowR, 0.17 * l.UpperArm);
-            Capsule(2, j.ElbowL, j.WristL, 0.14 * l.LowerArm);
-            Capsule(3, j.ElbowR, j.WristR, 0.14 * l.LowerArm);
-            Capsule(4, j.HipL, j.KneeL, 0.17 * l.Thigh);
-            Capsule(5, j.HipR, j.KneeR, 0.17 * l.Thigh);
-            Capsule(6, j.KneeL, j.AnkleL, 0.12 * l.Shin);
-            Capsule(7, j.KneeR, j.AnkleR, 0.12 * l.Shin);
+            // капсулы по костям: индекс отклонения = порядок CanonicalFrame.BoneNames; радиусы суставов
+            // (S43): соседние сегменты делят радиус в общем суставе (колено и локоть — среднее соседних)
+            var rHip = 0.17 * l.Thigh;
+            var rKnee = 0.5 * ((0.17 * l.Thigh) + (0.12 * l.Shin));
+            var rAnkle = 0.12 * l.Shin;
+            var rSh = 0.17 * l.UpperArm;
+            var rElbow = 0.5 * ((0.17 * l.UpperArm) + (0.14 * l.LowerArm));
+            var rWrist = 0.14 * l.LowerArm;
+            Capsule(0, j.ShL, j.ElbowL, rSh, rElbow);
+            Capsule(1, j.ShR, j.ElbowR, rSh, rElbow);
+            Capsule(2, j.ElbowL, j.WristL, rElbow, rWrist);
+            Capsule(3, j.ElbowR, j.WristR, rElbow, rWrist);
+            Capsule(4, j.HipL, j.KneeL, rHip, rKnee);
+            Capsule(5, j.HipR, j.KneeR, rHip, rKnee);
+            Capsule(6, j.KneeL, j.AnkleL, rKnee, rAnkle);
+            Capsule(7, j.KneeR, j.AnkleR, rKnee, rAnkle);
 
             dc.Pop();
         }
@@ -839,6 +934,54 @@ namespace PlayerTrial
                 ctx.LineTo(d, true, false);
             }
 
+            return g;
+        }
+
+        /// <summary>
+        /// Конус с закруглёнными концами (S43): замкнутая фигура по двум экранным точкам и пиксельным
+        /// радиусам концов (ra у точки a, rb у точки b; rb может равняться ra). Боковые стороны — внешние
+        /// касательные окружностей концов (угол alpha = Asin((ra − rb)/d) от перпендикуляра к оси), торцы —
+        /// дуги радиусов rb и ra. Вырожденный случай (концы совпали) — эллипс радиуса max(ra, rb) вокруг a.
+        /// </summary>
+        private static StreamGeometry ConeGeometry(Point a, Point b, double ra, double rb)
+        {
+            var g = new StreamGeometry();
+            var dx = b.X - a.X;
+            var dy = b.Y - a.Y;
+            var d = Math.Sqrt((dx * dx) + (dy * dy));
+            using (var ctx = g.Open())
+            {
+                if (d < 1e-6)
+                {
+                    var r = Math.Max(ra, rb);
+                    ctx.BeginFigure(new Point(a.X - r, a.Y), true, false);
+                    ctx.ArcTo(new Point(a.X + r, a.Y), new Size(r, r), 0, false, SweepDirection.Counterclockwise, true, false);
+                    ctx.ArcTo(new Point(a.X - r, a.Y), new Size(r, r), 0, false, SweepDirection.Counterclockwise, true, false);
+                }
+                else
+                {
+                    var ux = dx / d;
+                    var uy = dy / d;
+                    var nx = -uy;
+                    var ny = ux;
+                    var alpha = Math.Asin(Math.Max(-1.0, Math.Min(1.0, (ra - rb) / d)));
+                    var ca = Math.Cos(alpha);
+                    var sa = Math.Sin(alpha);
+                    var wx = (nx * ca) + (ux * sa); // w = n·cos(alpha) + u·sin(alpha)
+                    var wy = (ny * ca) + (uy * sa);
+                    var t1a = new Point(a.X + (ra * wx), a.Y + (ra * wy));
+                    var t1b = new Point(b.X + (rb * wx), b.Y + (rb * wy));
+                    var t2b = new Point(b.X - (rb * wx), b.Y - (rb * wy));
+                    var t2a = new Point(a.X - (ra * wx), a.Y - (ra * wy));
+                    ctx.BeginFigure(t1a, true, false);
+                    ctx.LineTo(t1b, true, false);
+                    ctx.ArcTo(t2b, new Size(rb, rb), 0, false, SweepDirection.Counterclockwise, true, false);
+                    ctx.LineTo(t2a, true, false);
+                    ctx.ArcTo(t1a, new Size(ra, ra), 0, false, SweepDirection.Counterclockwise, true, false);
+                }
+            }
+
+            g.Freeze();
             return g;
         }
 
@@ -878,9 +1021,15 @@ namespace PlayerTrial
             return new FormattedText(text, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), size, brush, VisualTreeHelper.GetDpi(this).PixelsPerDip);
         }
 
-        private void Text(DrawingContext dc, string text, double x, double y, double size, Brush brush)
+        /// <summary>
+        /// Подпись на пилюле-подложке (S41): скруглённый прямоугольник цвета фона с непрозрачностью 0xB0,
+        /// радиус 4, поля 8 по горизонтали и 4 по вертикали (приём из SceneCanvas); поверх — текст
+        /// FormattedText в заданной точке (x, y — позиция текста, как без подложки).
+        /// </summary>
+        private void TextOnPill(DrawingContext dc, FormattedText text, double x, double y)
         {
-            dc.DrawText(MakeText(text, size, brush), new Point(x, y));
+            dc.DrawRoundedRectangle(LabelPillBrush, null, new Rect(x - 8, y - 4, text.Width + 16, text.Height + 8), 4, 4);
+            dc.DrawText(text, new Point(x, y));
         }
 
         private static T Freeze<T>(T freezable)

@@ -43,7 +43,7 @@ namespace PlayerTrial
             "boxLeft", "boxTop", "boxRight", "boxBottom", "feetY", "boxCenterDx",
             "curLeft", "curTop", "curRight", "curBottom",
             "ghostLeft", "ghostTop", "ghostRight", "ghostBottom", "feetDy",
-            "sceneOpaquePx",
+            "sceneOpaquePx", "curRootDx", "ghostRootDx",
         };
 
         private static readonly Brush Panel = new SolidColorBrush(Color.FromRgb(0x1b, 0x1c, 0x22));
@@ -196,11 +196,20 @@ namespace PlayerTrial
         private readonly TextBlock hud = new TextBlock
         {
             Foreground = Text,
-            Background = new SolidColorBrush(Color.FromArgb(0xa0, 0x10, 0x11, 0x14)),
             FontFamily = new FontFamily("Consolas"),
             FontSize = 15,
-            Padding = new Thickness(8),
-            Margin = new Thickness(8),
+            IsHitTestVisible = false,
+        };
+
+        // подложка HUD сцены (S41): плотная плашка цвета фона — подписи «без сенсора»/«время»
+        // читаются при любом зуме, призрак проходит под ней; в ghostPanel добавляется подложка,
+        // содержимое правится по имени поля hud как раньше
+        private readonly Border hudPlate = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0xB0, 0x0A, 0x0B, 0x0E)),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(8, 4, 8, 4),
+            Margin = new Thickness(14, 14, 8, 8), // прежний (8) плюс 6 сверху и слева
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             IsHitTestVisible = false,
@@ -487,7 +496,10 @@ namespace PlayerTrial
 
             ghostPanel.Children.Add(ghost);
 
-            ghostPanel.Children.Add(hud);
+            // подложка получает текст HUD здесь: инициализатор поля не может ссылаться
+            // на поле экземпляра hud
+            hudPlate.Child = hud;
+            ghostPanel.Children.Add(hudPlate);
             ghostPanel.Children.Add(countdownText);
 
             // финальный экран (T20): карточка итогов в центре сцены призраков, поверх остального
@@ -2139,11 +2151,17 @@ namespace PlayerTrial
         {
             var inv = CultureInfo.InvariantCulture;
             var seqDir = RepoPath(Path.Combine(opts.Tour!, opts.Seq));
-            Directory.CreateDirectory(seqDir); // RepoPath создаёт каталог файла, здесь нужен сам каталог записи
             var logPath = Path.Combine(seqDir, "tour.log");
             var tsvPath = Path.Combine(seqDir, "tour.tsv");
             var log = new List<string>();
             var failures = new List<string>();
+
+            // старый tour.log удаляется до первых записей в лог: ранние WARN этого запуска
+            // не должны дописаться в файл прошлого прогона и потеряться при удалении
+            if (File.Exists(logPath))
+            {
+                File.Delete(logPath);
+            }
 
             // лог пишется построчно, порциями по несколько строк
             void FlushLog()
@@ -2168,12 +2186,17 @@ namespace PlayerTrial
             {
                 if (track == null)
                 {
-                    Say("RESULT: FAIL: эталон не загрузился");
-                    FlushLog();
+                    // каталог записи не создаётся: своего лога у записи нет, строка провала
+                    // идёт в журнал ошибок набора каталога тура
                     TourExitCode = 1;
+                    File.AppendAllText(
+                        RepoPath(Path.Combine(opts.Tour!, "tour-set-errors.log")),
+                        opts.Seq + ": RESULT: FAIL: эталон не загрузился" + Environment.NewLine);
                     Close();
                     return;
                 }
+
+                Directory.CreateDirectory(seqDir); // каталог записи только при загрузившемся эталоне
 
                 timer.Stop();
                 media.Pause();
@@ -2230,12 +2253,8 @@ namespace PlayerTrial
                 }
 
                 // каждый запуск тура начинает отчёт заново: заголовок tour.tsv пишется всегда,
-                // tour.log удаляется, чтобы дописывание строк (AppendAllLines) шло с начала
+                // tour.log удалён в начале метода, чтобы дописывание строк шло с начала
                 File.WriteAllText(tsvPath, string.Join("\t", TourTsvColumns) + Environment.NewLine);
-                if (File.Exists(logPath))
-                {
-                    File.Delete(logPath);
-                }
 
                 // кадры листов по ключу (момент, множитель), собираются за весь обход камер
                 var shots = new Dictionary<(double T, double Z), List<(string Cam, BitmapSource? Video, BitmapSource Scene)>>();
@@ -2259,9 +2278,10 @@ namespace PlayerTrial
                     var rows = new List<string>();
                     foreach (var t in moments)
                     {
+                        await SeekTourMomentAsync(t, noVideo);
                         foreach (var z in zooms)
                         {
-                            rows.Add(await TourStepAsync(cam, t, z, source, noVideo, shots));
+                            rows.Add(await TourZoomStepAsync(cam, t, z, source, noVideo, shots));
                         }
 
                         FlushLog();
@@ -2283,9 +2303,10 @@ namespace PlayerTrial
                     var rows = new List<string>();
                     foreach (var t in moments)
                     {
+                        await SeekTourMomentAsync(t, noVideo);
                         foreach (var z in zooms)
                         {
-                            rows.Add(await TourStepAsync(string.Empty, t, z, source, noVideo, shots));
+                            rows.Add(await TourZoomStepAsync(string.Empty, t, z, source, noVideo, shots));
                         }
 
                         FlushLog();
@@ -2330,19 +2351,24 @@ namespace PlayerTrial
             Close();
         }
 
-        /// <summary>Шаг тура на (камера, момент, множитель): пауза на моменте и 600 мс на проявление,
-        /// множитель слайдера, прогон сглаживания (свежий FrameFollower, сброс кадра сцены, 90 тиков
-        /// по 1/30 с от t−3 с), HUD и компоновка, снимки панелей видео и сцены в shots, строка отчёта.</summary>
-        private async Task<string> TourStepAsync(string cam, double t, double z, string source, bool noVideo,
-                Dictionary<(double T, double Z), List<(string Cam, BitmapSource? Video, BitmapSource Scene)>> shots)
+        /// <summary>Перемотка тура (S34) на момент: пауза на моменте и 600 мс на проявление кадра.
+        /// Вызывается один раз на (камера, момент); зумы момента обходятся без повторной перемотки.</summary>
+        private async Task SeekTourMomentAsync(double t, bool noVideo)
         {
-            var inv = CultureInfo.InvariantCulture;
-            BitmapSource? videoShot = null;
             if (!noVideo)
             {
                 media.Position = TimeSpan.FromSeconds(t);
                 await Task.Delay(600);
             }
+        }
+
+        /// <summary>Шаг тура на (камера, момент, множитель) после перемотки момента: множитель
+        /// слайдера, прогон сглаживания (свежий FrameFollower, сброс кадра сцены, 90 тиков
+        /// по 1/30 с от t−3 с), HUD и компоновка, снимки панелей видео и сцены в shots, строка отчёта.</summary>
+        private async Task<string> TourZoomStepAsync(string cam, double t, double z, string source, bool noVideo,
+                Dictionary<(double T, double Z), List<(string Cam, BitmapSource? Video, BitmapSource Scene)>> shots)
+        {
+            var inv = CultureInfo.InvariantCulture;
 
             zoomSlider.Value = z;
 
@@ -2366,7 +2392,7 @@ namespace PlayerTrial
             ghost.InvalidateVisual();
             await Task.Delay(250);
 
-            videoShot = CaptureElement(videoPanel);
+            var videoShot = CaptureElement(videoPanel);
             var sceneShot = CaptureElement(ghostPanel)!;
 
             // число непрозрачных пикселей кадра сцены (альфа > 0): 0 — призрак и HUD не отрисовались
@@ -2397,7 +2423,9 @@ namespace PlayerTrial
         /// Рамка cur* — bbox текущего кадра cams.json этой камеры (без расширения по времени и без
         /// запаса обуви) тем же отображением, что строит FrameFollower; ghost* — ReferenceBounds;
         /// feetDy — низ габарита призрака минус линия ног танцора, пересчитанная в панель сцены;
-        /// sceneOpaquePx — число непрозрачных пикселей кадра сцены, последний столбец.</summary>
+        /// sceneOpaquePx — число непрозрачных пикселей кадра сцены; curRootDx — корень танцора
+        /// текущего кадра cams.json тем же отображением минус половина ширины окна; ghostRootDx —
+        /// проекция корня эталон-призрака (ReferenceRootX) минус половина ширины панели сцены.</summary>
         private string BuildTourRow(string cam, double t, double z, string source,
                 (double Zoom, double PanX, double PanY, ScreenBox Box) step, CultureInfo inv, int sceneOpaquePx)
         {
@@ -2432,14 +2460,21 @@ namespace PlayerTrial
             var curTop = string.Empty;
             var curRight = string.Empty;
             var curBottom = string.Empty;
+            var curRootDx = string.Empty;
             if (hasVideo && cam.Length > 0 && camTracks.TryGetValue(cam, out var camTrack)
                     && camTrack.TryGetBox(t, 0.0, out var cur))
             {
                 var s = Math.Min(winW / videoW, winH / videoH);
-                curLeft = Num((winW / 2.0) + ((cur.UMin - (videoW / 2.0)) * s * z) + step.PanX);
-                curTop = Num((winH / 2.0) + ((cur.VMin - (videoH / 2.0)) * s * z) + step.PanY);
-                curRight = Num((winW / 2.0) + ((cur.UMax - (videoW / 2.0)) * s * z) + step.PanX);
-                curBottom = Num((winH / 2.0) + ((cur.VMax - (videoH / 2.0)) * s * z) + step.PanY);
+                curLeft = Num((winW / 2.0) + ((cur.UMin - (videoW / 2.0)) * s * step.Zoom) + step.PanX);
+                curTop = Num((winH / 2.0) + ((cur.VMin - (videoH / 2.0)) * s * step.Zoom) + step.PanY);
+                curRight = Num((winW / 2.0) + ((cur.UMax - (videoW / 2.0)) * s * step.Zoom) + step.PanX);
+                curBottom = Num((winH / 2.0) + ((cur.VMax - (videoH / 2.0)) * s * step.Zoom) + step.PanY);
+
+                // корень танцора кадра ровно t: то же отображение, z — итоговый зум шага (step.Zoom)
+                if (camTrack.TryGetRoot(t, out var root))
+                {
+                    curRootDx = Num(((root.U - (videoW / 2.0)) * s * step.Zoom) + step.PanX);
+                }
             }
 
             var bounds = ghost.ReferenceBounds();
@@ -2458,6 +2493,15 @@ namespace PlayerTrial
                 feetDy = Num(bounds.Bottom - (step.Box.FeetY * (gh / winH)));
             }
 
+            // проекция корня эталон-призрака относительно центра панели сцены; эталона нет — NaN
+            var ghostRootDx = string.Empty;
+            var rootX = ghost.ReferenceRootX();
+            var panelW = ghostPanel.ActualWidth;
+            if (!double.IsNaN(rootX) && panelW > 0)
+            {
+                ghostRootDx = Num(rootX - (panelW / 2.0));
+            }
+
             var cols = new[]
             {
                 opts.Seq, source, cam, Num(t), Num(z), Num(step.Zoom), Num(target.ZAutoTarget),
@@ -2468,18 +2512,22 @@ namespace PlayerTrial
                 curLeft, curTop, curRight, curBottom,
                 ghostLeft, ghostTop, ghostRight, ghostBottom, feetDy,
                 sceneOpaquePx.ToString(inv),
+                curRootDx, ghostRootDx,
             };
             return string.Join("\t", cols);
         }
 
-        /// <summary>Минимум последнего поля (sceneOpaquePx) по строкам tour.tsv; нет ни одного числа — 0.</summary>
+        /// <summary>Минимум столбца sceneOpaquePx по строкам tour.tsv; нет ни одного числа — 0.
+        /// Столбец ищется по имени в TourTsvColumns: он больше не последний (дальше curRootDx и
+        /// ghostRootDx, S34/E54).</summary>
         private static int MinSceneOpaquePx(IEnumerable<string> rows)
         {
+            var opaqueIndex = Array.IndexOf(TourTsvColumns, "sceneOpaquePx");
             var min = int.MaxValue;
             foreach (var row in rows)
             {
-                var tab = row.LastIndexOf('\t');
-                if (tab >= 0 && int.TryParse(row.Substring(tab + 1), out var v) && v < min)
+                var cols = row.Split('\t');
+                if (cols.Length > opaqueIndex && int.TryParse(cols[opaqueIndex], out var v) && v < min)
                 {
                     min = v;
                 }

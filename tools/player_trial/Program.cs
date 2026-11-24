@@ -39,6 +39,10 @@ namespace PlayerTrial
             var setPath = Path.IsPathRooted(opts.TourSet!) ? opts.TourSet! : Path.Combine(root, opts.TourSet!);
             var logPath = Path.Combine(root, "data", "preview", "tour", "tour-set.log");
             Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+
+            // журнал набора начинается заново на каждый запуск
+            File.WriteAllText(logPath, string.Empty);
+
             if (!File.Exists(setPath))
             {
                 File.WriteAllText(logPath, "RESULT: FAIL: нет файла списка " + opts.TourSet + Environment.NewLine);
