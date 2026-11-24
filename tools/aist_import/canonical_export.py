@@ -31,10 +31,30 @@ motions/<seq>.pkl в --src-smpl, иначе coco. Явные smpl и coco раб
   up  = normalize(neck - root)
   left = линия бёдер (lhip - rhip), ортогонализованная по up, единичная
   forward = cross(left, up)          (left x up = forward, как x cross y = z)
-Направления костей -- единичные векторы в координатах (left, up, forward).
-Перемещение корня -- в долях длины ноги (canonical-pose S9), относительно первого
-валидного кадра, оси текущего heading: forward = по направлению взгляда,
-side = влево от взгляда, height = над полом.
+
+Формат эталона -- версия 2 (trial.md Contract «Формат эталона, версия 2 (S39)»):
+  formatVersion: 2;
+  bones: единичные направления восьми костей в системе таза (left, up, forward),
+    той же, в которой призрак собирает конечности;
+  torso: lean = atan2(up·F, up·Y) (наклон вперёд, плюс -- вперёд);
+    turn -- поворот плечевой линии относительно бёдерно-заданной системы, как
+    раньше; roll = atan2(-up·L, up·U1) (боковой наклон; L = Y×F,
+    U1 = Y·cos(lean) + F·sin(lean)); basis -- девять чисел, построчно оси
+    left, up, forward в координатах (L, Y, F) кадра (L = Y×F,
+    F = (sin h, 0, cos h) по heading кадра);
+  root.heading -- развёрнутый по времени азимут переда торса, радианы,
+    не свёрнут в ±pi (полный оборот тела даёт прирост 2pi). Разворот по треку,
+    кадр за кадром: сырой азимут raw = atan2(fh.x, fh.z) горизонтальной
+    проекции переда, надёжность w = |fh| (если w <= 1e-9, перед вертикален --
+    raw берётся прежним); непрерывный ряд cont (cont[i] = cont[i-1] +
+    wrap(raw[i] - raw[i-1])); ветвь b из {0, pi}, cand = cont[i] + b, если
+    |wrap(cand - h[i-1])| > 120° -- ветвь меняется (b = pi - b) и cand
+    пересчитывается; k = clamp(w/0.25, 0.1, 1); h[i] = h[i-1] + k·wrap(cand -
+    h[i-1]), первый кадр h = raw.
+  Перемещение корня -- в долях длины ноги (canonical-pose S9), относительно
+    первого валидного кадра, в осях развёрнутого heading:
+    forward = вдоль F, side = влево от взгляда (L = (F.z, 0, -F.x)),
+    height = над полом.
 Пол: 2-й перцентиль высоты низшей лодыжки минус смещение лодыжка-подошва
 (6.4 см; 0.0705 * smpl_scaling, scaling 90-95 -> 6.2-6.6, docs/aist-format-findings.md).
 Если оценка пола отличается от глобальной медианы (71.6) больше чем на 10 см --
@@ -54,14 +74,15 @@ pkl (микросекунды), в JSON переводится в секунды
 Режимы запуска:
   python canonical_export.py --seq <имя cAll> [--source smpl|coco]
       [--src ...] [--src-smpl ...] [--smpl-model ...] [--src2d ...] [--out ...]
-    одиночная запись, прежний контрольный вывод и санити дословно.
+    одиночная запись, прежний контрольный вывод и санити плюс строки
+    «roll: p90 .. max рад» и «solveErr: p99 .. max град».
   python canonical_export.py --batch <файл> [--source smpl|coco|auto] [остальные как выше]
     список последовательностей: первый токен строки -- имя с cAll, пустые строки
     и строки с # пропускаются; неудачная запись не останавливает остальные.
     Пишет <out>/batch-summary.tsv (заголовок + строка на запись), столбцы:
       seq, source, frames, skipped, durationSec, legLenCm, floorFlag,
       minRootHeight, maxDHeadingDeg, headingJumpFrames, maxDBoneDeg,
-      boneJumpFrames
+      boneJumpFrames, solveErrP99Deg, maxSolveErrDeg
     durationSec = frames/60 (0.01); legLenCm как в canonical.json; floorFlag = 1,
     если пол взят глобальный (ветка «подозрителен»); minRootHeight -- минимум
     root.height (4 знака). Скачки -- между соседними выведенными кадрами:
@@ -69,7 +90,11 @@ pkl (микросекунды), в JSON переводится в секунды
     -180..180), headingJumpFrames -- число пар с |Δheading| > 45°,
     maxDBoneDeg -- максимум угла между направлениями одной кости по восьми
     костям, boneJumpFrames -- число пар, где хотя бы одна кость повернулась
-    больше 60°. В stdout строка на запись и итог. Код возврата: 0 -- все записи
+    больше 60°. solveErrP99Deg/maxSolveErrDeg -- расхождение (град) костей,
+    восстановленных через сохранённые оси торса (basis по округлённому heading
+    кадра, реортонормализация) и округлённых координат костей, с исходными
+    мировыми костями: 99-й перцентиль и максимум по всем кадрам и восьми
+    костям. В stdout строка на запись и итог. Код возврата: 0 -- все записи
     выведены, 1 -- хоть одна не удалась (список в stdout).
 Порядок COCO-17: nose, leye, reye, lear, rear, lsho, rsho, lelb, relb,
 lwri, rwri, lhip, rhip, lkne, rkne, lank, rank.
@@ -143,6 +168,11 @@ def frame_coords(v, left, up, fwd):
 def wrap_deg(d):
     """Угол в градусах, свёрнутый в -180..180."""
     return (d + 180.0) % 360.0 - 180.0
+
+
+def wrap_rad(a):
+    """Угол в радианах, свёрнутый в (-pi, pi)."""
+    return (a + np.pi) % (2.0 * np.pi) - np.pi
 
 
 def jump_stats(frames):
@@ -328,7 +358,9 @@ def export_one(seq, source, args, repo, verbose=True):
 
     root0 = root[0]
     bones_out_dev = 0.0
-    frames = []
+    # ---- первый проход: геометрия кадра без записи (heading разворачивается
+    # ---- по всему треку, S39) ----
+    pre = []
     for i in range(len(P)):
         up = unit(neck[i] - root[i])
         hl = P[i, LHIP] - P[i, RHIP]
@@ -347,33 +379,77 @@ def export_one(seq, source, args, repo, verbose=True):
         # поворот плечевой линии относительно бёдерно-заданной системы торса
         turn = float(np.arctan2(np.dot(sl_o, fwd), np.dot(sl_o, left)))
 
-        fwd_h = fwd - WORLD_UP * np.dot(fwd, WORLD_UP)
-        fwd_h = unit(fwd_h)
-        # наклон торса от вертикали в сагиттальной плоскости (вперёд -- плюс)
-        lean = float(np.arctan2(np.dot(up, fwd_h), float(np.dot(up, WORLD_UP))))
-        heading = float(np.arctan2(fwd_h[0], fwd_h[2]))
-        left_h = np.cross(WORLD_UP, fwd_h)  # y cross z = x, влево
+        # сырой азимут переда и надёжность: длина горизонтальной проекции
+        # переда (S39); перед вертикален -- азимут берётся прежним
+        fh = fwd - WORLD_UP * np.dot(fwd, WORLD_UP)
+        w = float(np.linalg.norm(fh))
+        if w > 1e-9:
+            raw = float(np.arctan2(fh[0], fh[2]))
+        else:
+            raw = pre[-1]["raw"] if pre else 0.0
 
         hd = unit(H[i] - neck[i])
-        tilt = float(np.arctan2(np.dot(hd, fwd_h), np.dot(hd, up)))
+        pre.append({
+            "up": up, "left": left, "fwd": fwd, "bones": bones,
+            "turn": turn, "raw": raw, "w": w, "hd": hd,
+        })
+
+    # ---- разворот направления взгляда по треку (S39) ----
+    branch = 0.0
+    headings = []
+    cont = 0.0
+    for i, fr in enumerate(pre):
+        if i == 0:
+            cont = fr["raw"]
+            h = cont
+        else:
+            cont = cont + wrap_rad(fr["raw"] - pre[i - 1]["raw"])
+            cand = cont + branch
+            if abs(wrap_rad(cand - headings[i - 1])) > 2.0 * np.pi / 3.0:  # 120°
+                branch = np.pi - branch
+                cand = cont + branch
+            k = min(1.0, max(0.1, fr["w"] / 0.25))
+            h = headings[i - 1] + k * wrap_rad(cand - headings[i - 1])
+        headings.append(h)
+
+    # ---- второй проход: запись кадров в осях развёрнутого heading ----
+    frames = []
+    for i, fr in enumerate(pre):
+        h = headings[i]
+        F = np.array([np.sin(h), 0.0, np.cos(h)])
+        L = np.array([F[2], 0.0, -F[0]])  # Y x F, влево от взгляда
+        up, left, fwd = fr["up"], fr["left"], fr["fwd"]
+
+        # наклон торса от вертикали в плоскости (вертикаль, heading)
+        lean = float(np.arctan2(np.dot(up, F), float(np.dot(up, WORLD_UP))))
+        U1 = WORLD_UP * np.cos(lean) + F * np.sin(lean)
+        roll = float(np.arctan2(-np.dot(up, L), np.dot(up, U1)))
+        basis = [
+            float(np.dot(left, L)), float(np.dot(left, WORLD_UP)), float(np.dot(left, F)),
+            float(np.dot(up, L)), float(np.dot(up, WORLD_UP)), float(np.dot(up, F)),
+            float(np.dot(fwd, L)), float(np.dot(fwd, WORLD_UP)), float(np.dot(fwd, F)),
+        ]
+
+        tilt = float(np.arctan2(np.dot(fr["hd"], F), np.dot(fr["hd"], up)))
 
         dr = root[i] - root0
         frames.append({
             "t": round(idx[i] / FPS, 4),
-            "bones": {k: [round(float(x), 4) for x in bones[k]] for k in
+            "bones": {k: [round(float(x), 4) for x in fr["bones"][k]] for k in
                       ("uArmL", "uArmR", "lArmL", "lArmR", "thighL", "thighR", "shinL", "shinR")},
-            "torso": {"lean": round(lean, 4), "turn": round(turn, 4)},
+            "torso": {"lean": round(lean, 4), "turn": round(fr["turn"], 4),
+                      "roll": round(roll, 4), "basis": [round(x, 4) for x in basis]},
             "head": {"tilt": round(tilt, 4)},
             "root": {
-                "forward": round(float(np.dot(dr, fwd_h)) / leg_len, 4),
-                "side": round(float(np.dot(dr, left_h)) / leg_len, 4),
+                "forward": round(float(np.dot(dr, F)) / leg_len, 4),
+                "side": round(float(np.dot(dr, L)) / leg_len, 4),
                 "height": round(float(root[i, 1] - floor_y) / leg_len, 4),
-                "heading": round(heading, 4),
+                "heading": round(float(h), 4),
             },
         })
 
     result = {
-        "formatVersion": 1,
+        "formatVersion": 2,
         "source": source,
         "sequence": seq,
         "video": seq.replace("cAll", "c05") + ".mp4",
@@ -401,6 +477,33 @@ def export_one(seq, source, args, repo, verbose=True):
 
     # ---- сводка (столбцы batch-summary.tsv) ----
     max_dh, head_jumps, max_dbone, bone_jumps = jump_stats(frames)
+
+    # расхождение восстановления костей по сохранённым осям (S39): по
+    # записанным (округлённым) данным -- basis по округлённому heading кадра,
+    # реортонормализация, кости в системе (left_r, up_r, fwd_r) против
+    # исходных мировых костей
+    errs = []
+    for i, fr in enumerate(frames):
+        h = fr["root"]["heading"]
+        F = np.array([np.sin(h), 0.0, np.cos(h)])
+        L = np.array([F[2], 0.0, -F[0]])
+        bb = fr["torso"]["basis"]
+        left_r = L * bb[0] + WORLD_UP * bb[1] + F * bb[2]
+        up_r = L * bb[3] + WORLD_UP * bb[4] + F * bb[5]
+        left_r /= np.linalg.norm(left_r)
+        up_r = up_r - left_r * np.dot(up_r, left_r)
+        up_r /= np.linalg.norm(up_r)
+        fwd_r = np.cross(left_r, up_r)
+        for name, ja, jb in BONES:
+            cr = fr["bones"][name]
+            v_r = left_r * cr[0] + up_r * cr[1] + fwd_r * cr[2]
+            v_r /= np.linalg.norm(v_r)
+            v = unit(P[i, jb] - P[i, ja])
+            errs.append(np.degrees(np.arccos(max(-1.0, min(1.0, float(np.dot(v_r, v)))))))
+    errs = np.asarray(errs)
+    solve_p99 = float(np.percentile(errs, 99))
+    solve_max = float(errs.max())
+
     summary = {
         "seq": seq,
         "source": source,
@@ -414,6 +517,8 @@ def export_one(seq, source, args, repo, verbose=True):
         "headingJumpFrames": head_jumps,
         "maxDBoneDeg": round(max_dbone, 2),
         "boneJumpFrames": bone_jumps,
+        "solveErrP99Deg": round(solve_p99, 4),
+        "maxSolveErrDeg": round(solve_max, 4),
     }
     if not verbose:
         return summary
@@ -434,6 +539,9 @@ def export_one(seq, source, args, repo, verbose=True):
         v = lengths[name]
         print(f"  {name:7s} {v.min():6.2f} .. {v.max():6.2f}  медиана {np.median(v):6.2f}")
     print(f"единичность bones: макс |‖v‖-1| = {bones_out_dev:.2e}")
+    rolls = np.asarray([abs(fr["torso"]["roll"]) for fr in frames])
+    print(f"roll: p90 {np.percentile(rolls, 90):.3f} .. max {rolls.max():.3f} рад")
+    print(f"solveErr: p99 {solve_p99:.3f} .. max {solve_max:.3f} град")
 
     # ---- санити ----
     sho_hip = float(np.mean((neck[:, 1] - root[:, 1])))
@@ -480,7 +588,7 @@ def run_batch(args, repo):
     os.makedirs(out_dir, exist_ok=True)
     columns = ("seq", "source", "frames", "skipped", "durationSec", "legLenCm",
                "floorFlag", "minRootHeight", "maxDHeadingDeg", "headingJumpFrames",
-               "maxDBoneDeg", "boneJumpFrames")
+               "maxDBoneDeg", "boneJumpFrames", "solveErrP99Deg", "maxSolveErrDeg")
     rows = []
     failed = []
     for seq in seqs:
@@ -497,7 +605,9 @@ def run_batch(args, repo):
               f"maxDHeadingDeg {r['maxDHeadingDeg']:.2f}, "
               f"headingJumpFrames {r['headingJumpFrames']}, "
               f"maxDBoneDeg {r['maxDBoneDeg']:.2f}, "
-              f"boneJumpFrames {r['boneJumpFrames']}")
+              f"boneJumpFrames {r['boneJumpFrames']}, "
+              f"solveErrP99Deg {r['solveErrP99Deg']:.3f}, "
+              f"maxSolveErrDeg {r['maxSolveErrDeg']:.3f}")
 
     tsv_path = os.path.join(out_dir, "batch-summary.tsv")
     with open(tsv_path, "w", encoding="utf-8", newline="\n") as f:
@@ -509,6 +619,7 @@ def run_batch(args, repo):
                 f"{r['minRootHeight']:.4f}", f"{r['maxDHeadingDeg']:.2f}",
                 str(r["headingJumpFrames"]), f"{r['maxDBoneDeg']:.2f}",
                 str(r["boneJumpFrames"]),
+                f"{r['solveErrP99Deg']:.3f}", f"{r['maxSolveErrDeg']:.3f}",
             ]) + "\n")
     print(f"сводка: {tsv_path}")
     print(f"итог: записей {len(seqs)}, выведено {len(rows)}, не удалось {len(failed)}"
